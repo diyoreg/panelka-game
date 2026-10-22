@@ -80,6 +80,7 @@ export class Player {
     this.camPos = new THREE.Vector3();
     this.camLook = new THREE.Vector3();
     this.climb = null;         // { path, t, len } while climbing
+    this.indoor = false;       // inside a building (set by main.js): the camera stays closer
   }
 
   spawn(p) {
@@ -263,11 +264,14 @@ export class Player {
       }
       if (!out) return null;
       const h0 = Math.min(highest(cols, p, out, p.y, p.y + 1.3), p.y + 1.3) + 0.05;
+      // out over a rail is fine, out through a wall is not
+      if (!segmentFree(cols, p, out, h0 + 0.05, h0 + 0.6)) return null;
       pts.push(new THREE.Vector3(p.x, h0, p.z), new THREE.Vector3(out.x, h0, out.z));
       a = new THREE.Vector3(out.x, h0, out.z);
     }
     const h = highest(cols, a, target, target.y - 0.01, target.y + 1.3) + 0.05;
     if (h > this.pos.y + CLIMB.reach + 1.4) return null;
+    if (!segmentFree(cols, a, target, h + 0.05, h + 0.6)) return null;
     pts.push(new THREE.Vector3(a.x, h, a.z), new THREE.Vector3(target.x, h, target.z), target);
     return pts;
   }
@@ -385,7 +389,7 @@ export class Player {
     }
     const pivot = new THREE.Vector3(p.x, p.y + this.height - 0.15, p.z);
     const dir = new THREE.Vector3(Math.sin(this.camYaw) * Math.cos(this.camPitch), -Math.sin(this.camPitch), Math.cos(this.camYaw) * Math.cos(this.camPitch));
-    const want = (this.crouch ? 3.4 : 4.3) + (this.gait === 'run' ? 0.5 : 0);
+    const want = this.indoor ? (this.crouch ? 1.7 : 2.2) : (this.crouch ? 3.4 : 4.3) + (this.gait === 'run' ? 0.5 : 0);
     // pull camera in front of walls
     let dist = want;
     const cols = this.world.collidersNear(pivot.x, pivot.z, want + 1);
@@ -412,6 +416,15 @@ export class Player {
 function columnFree(cols, x, z, y0, y1) {
   const r = RADIUS * 0.8;
   return !cols.some((b) => x + r > b.min.x && x - r < b.max.x && z + r > b.min.z && z - r < b.max.z && b.max.y > y0 && b.min.y < y1);
+}
+
+// nothing between the heights y0 and y1 along the segment a-b (seen from above)
+function segmentFree(cols, a, b, y0, y1) {
+  const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 0.1));
+  for (let i = 0; i <= n; i++) {
+    if (!columnFree(cols, a.x + (b.x - a.x) * i / n, a.z + (b.z - a.z) * i / n, y0, y1)) return false;
+  }
+  return true;
 }
 
 // highest top of the colliders along a segment, counting only tops between lo and hi

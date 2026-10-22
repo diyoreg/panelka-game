@@ -474,3 +474,21 @@ button {
   .map-card { max-width: 90vw; width: 90vw; }
   .menu-row { flex-wrap: wrap; }
 }
+
+/* what E does: a quiet line at the bottom, only while you look at a door or a switch */
+#hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--px) * 10);
+  transform: translateX(-50%);
+  z-index: 5;
+  font-size: calc(var(--px) * 3);
+  color: var(--cream);
+  text-shadow: calc(var(--px) * 0.5) calc(var(--px) * 0.5) 0 var(--ink);
+  pointer-events: none;
+  white-space: nowrap;
+}
+#hint .key {
+  display: inline-block;
+  margin-right: calc(var(--px) * 1.5);
+}

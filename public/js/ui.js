@@ -92,6 +92,11 @@ export const CONTROLS_HTML = `
   <div>${K('SPACE')}</div><div>In front of a ledge up to three meters high: climb onto it. A balcony, an entrance canopy, a car, a garage roof. On a balcony, look up or out and press it again to climb to the next floor.</div>
   <div>${K('C')}</div><div>Crouch. Toggle or hold, see Settings.</div>
 </div>
+<h3>INDOORS</h3>
+<div class="keys">
+  <div>${K('E')}</div><div>Open or close the door you look at, flip a light switch, open the roof hatch. Most of the panel five-storeys let you in: the entrance door, the stairs, the flats are not locked.</div>
+  <div>${K('SPACE')}</div><div>Under the open hatch on the top landing: climb out onto the roof.</div>
+</div>
 <h3>FLYING</h3>
 <div class="keys">
   <div>${K('SPACE')}${K('SPACE')}</div><div>Double tap Space to take off or to stop flying.</div>
@@ -120,6 +125,8 @@ export const ABOUT_HTML = `
 <p>The district is generated from a seed, block by block, as you walk. The same seed always gives the same yards, so you can come back to a place you liked. Your position is remembered between launches. The seed lives in Settings.</p>
 <p>Five-storey khrushchyovkas with pitched tin roofs, nine-, twelve- and sixteen-storey panel blocks around closed courtyards. Windows are lit behind net curtains and heavy drapes, a kitchen strip light here, a TV glowing blue there, and the bulbs on the stair landings. Every balcony is different: open with painted sheets or a lattice rail, glazed with old wooden frames or white plastic, with skis, boxes and frozen laundry. You can climb them.</p>
 <p>In the yards: cars buried in snow, swings, slides and a sandbox under a mushroom roof, a hockey box, carpet beaters, rubbish containers, garages and a transformer hut, birches, pollarded poplars and blue spruces. Snow lies on every sill, rail and canopy, icicles hang from the edges, a bulb flickers over some entrance.</p>
+<h3>INSIDE</h3>
+<p>The panel five-storeys are open. Push the steel door of the entrance, walk past the mailboxes and up the stairs: oil paint up to the shoulder, a bulb on every landing, padded doors with brass trim. Every landing has three flats, one, two and three rooms, none of them locked. Some are still as they were in the eighties: a wall unit full of crystal, a carpet on the wall, a gas heater over the kitchen sink. Others had their makeover in the 2000s: laminate, a leather sofa and a beige computer running Windows XP. Lights work on the switches by the doors. Step out onto the balcony, or climb the iron ladder on the top landing and push open the hatch to the roof.</p>
 <h3>THINGS TO NOTICE</h3>
 <p>Apartments switch their lights on and off over time. Snow glitters near the lamps, and you leave footprints. Auto snowfall changes on its own from a light dusting to a blizzard; or fix it to Snow, Blizzard or Clear on the main screen. Every now and then a siren sounds somewhere far away.</p>
 <h3>PERFORMANCE</h3>

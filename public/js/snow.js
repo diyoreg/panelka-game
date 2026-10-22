@@ -41,7 +41,7 @@ void main() {
   float shown = step(fract(aSeed.w * 7.31 + aSeed.x * 3.7), uSnow);
   float d = length(rel);
   vA = shown * smoothstep(uFade.x, uFade.y, d) * (1.0 - smoothstep(uFade.z, uFade.w, d));
-  if (wp.y < 0.0) vA = 0.0;
+  if (wp.y < 0.0 || insideLoaded(wp)) vA = 0.0;
   vWP = wp;
   vec4 mv = viewMatrix * vec4(wp, 1.0);
   float depth = max(0.05, -mv.z);

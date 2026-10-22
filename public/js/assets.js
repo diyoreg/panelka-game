@@ -42,6 +42,7 @@ export class Assets {
         h: ud.h || bounds.max.y,
         light: ud.light ? JSON.parse(ud.light) : null,
         lights: ud.lights ? JSON.parse(ud.lights) : null,
+        interior: ud.interior ? JSON.parse(ud.interior) : null,
         doors: ud.doors ? JSON.parse(ud.doors) : null,
         steam: ud.steam ? JSON.parse(ud.steam) : null,
         crown: ud.crown ? JSON.parse(ud.crown) : null,

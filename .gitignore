@@ -9,3 +9,6 @@ data/shots/
 data/*.zip
 
 node_modules/
+
+# Python bytecode of the Blender scripts
+__pycache__/

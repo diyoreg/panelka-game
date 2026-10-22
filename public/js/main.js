@@ -94,15 +94,19 @@ async function boot() {
   setSignAtlas(makeSignAtlas());
   U.uSeedOff.value = (hashString(seedText) % 1000) * 0.137;
   const assets = new Assets();
-  await assets.load('models/panelka.glb');
-  world = new PanelkaWorld(scene, assets, hashString(seedText));
+  const [plan] = await Promise.all([
+    fetch('models/k5i_plan.json').then((r) => r.json()).catch(() => null),
+    assets.load('models/panelka.glb'),
+  ]);
+  world = new PanelkaWorld(scene, assets, hashString(seedText), plan);
+  if (world.interiors) world.interiors.onSound = (kind) => audio.sfx(kind);
   player = new Player(world, settings);
   rig = await new Character().load('models/player.glb');
   scene.add(rig.root, rig.shadow);
   rig.onStep = (state) => {
     if (mode !== 'play') return;
     const surface = surfaceAt(player.pos);
-    audio.step(surface, state === 'crouch_walk' ? 0.5 : state === 'run' ? 1.2 : 0.8);
+    audio.step(surface, (state === 'crouch_walk' ? 0.5 : state === 'run' ? 1.2 : 0.8) * (surface === 'floor' ? 0.8 : 1));
     if (surface === 'snow') world.footstep(player.pos, player.facing);
   };
   fx = new Effects(scene, world);
@@ -436,9 +440,32 @@ function placeTitleCam() {
 let last = performance.now();
 let fpsAcc = 0, fpsN = 0;
 
-// footstep sound: snow in the yards, hard on steps, balconies and roofs
+// footstep sound: snow in the yards, the floor or the stairs indoors, hard on steps, balconies and roofs
 function surfaceAt(p) {
+  const inside = world.interiors?.surfaceAt(_up.copy(p).setY(p.y + 0.5));
+  if (inside) return inside;
   return p.y < 0.3 ? 'snow' : 'hard';
+}
+const _up = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+const _eye = new THREE.Vector3();
+let indoor = false;
+
+// The door or switch in front of you, its hint at the bottom of the screen, and E to use it
+function interact() {
+  const I = world.interiors;
+  const hint = $('#hint');
+  if (!I || mode !== 'play') { hint.classList.add('hidden'); return; }
+  camera.getWorldDirection(_dir);
+  _eye.set(player.pos.x, player.pos.y + player.height - 0.12, player.pos.z);
+  const t = I.pick(camera.position, _dir, _eye);
+  if (t && input.hit('KeyE')) I.use(t, player);
+  const label = I.label(t);
+  hint.classList.toggle('hidden', !label);
+  if (label && hint.dataset.label !== label) {
+    hint.dataset.label = label;
+    hint.innerHTML = `<span class="key">E</span> ${label}`;
+  }
 }
 
 function frame(now) {
@@ -483,6 +510,12 @@ function frame(now) {
     rig.update(dt, player, (mode === 'play' || mode === 'pause') && settings.camera !== 'first');
     U.uCamPos.value.copy(camera.position);
     world.updateLights(camera.position);
+    if (world.interiors) {
+      world.interiors.update(camera.position, dt, world.activeBlocks);
+      indoor = !!world.interiors.insideAt(camera.position);
+      player.indoor = !!world.interiors.insideAt(_up.copy(player.pos).setY(player.pos.y + 1.0));
+    }
+    interact();
     sky.position.copy(camera.position);
     fx.update(dt, camera.position);
     post.fog.drift(dt, fx.wind, fx.gust, camera);
@@ -493,7 +526,7 @@ function frame(now) {
     post.fog.uDensity.value = baseVol * (0.85 + 0.55 * snowfall.level);
     // snow is drawn over the fog and fades into it on its own (post.js)
     U.uPartFog.value = post.fog.uDensity.value * 0.75;
-    audio.update(dt, { gust: fx.gust, steam: fx.nearSteam, snow: snowfall.level });
+    audio.update(dt, { gust: fx.gust, steam: fx.nearSteam, snow: snowfall.level, indoor });
     post.render(scene, camera, U.uTime.value);
 
     if (settings.fps) {
@@ -520,6 +553,7 @@ window.__game = {
   toTitle,
   setSnowMode,
   get snowMode() { return snowMode; },
+  input,
 };
 
 boot().catch((e) => {

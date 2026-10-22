@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { namedMaterial, U, PK_LIGHTS } from './materials.js';
 import { hashInts, mulberry32, valueNoise2 } from './rng.js';
 import { blenderToThree, rotBounds } from './assets.js';
+import { Interiors, isInteriorAsset } from './interiors.js';
 
 export const PB = 128;            // block period
 const STREET = 4.5;               // half width of the streets on the block edges
@@ -29,10 +30,11 @@ const LIGHTS = {
   win: { col: [1.0, 0.72, 0.42], k: 1.1, cone: 0 },
 };
 
-const NORTH = ['p9_4', 'p9_3a', 'p9_3b', 'p12_2', 'p9_3a', 'k5_4b', 'p9_4'];
-const SOUTH = ['p9_2s', 'p9_3b', 'k5_3p', 'p9_3a', 'k5_4b', 'p12_2'];
+// k5i_*: the panel five-storeys you can walk into (interiors.js)
+const NORTH = ['p9_4', 'p9_3a', 'p9_3b', 'p12_2', 'p9_3a', 'k5_4b', 'p9_4', 'k5i_4'];
+const SOUTH = ['p9_2s', 'p9_3b', 'k5i_3', 'p9_3a', 'k5_4b', 'p12_2', 'k5i_4'];
 const SIDE = ['t16_a', 't16_b', 'p12_2', 'k5_2b', 't16_a', 'p9_2s'];
-const FIVE = ['k5_4b', 'k5_3p', 'k5_2b', 'k5_4b', 'k5_3p', 'p9_3a'];
+const FIVE = ['k5i_4', 'k5i_3', 'k5_4b', 'k5i_4', 'k5_2b', 'k5i_3', 'p9_3a'];
 // light (_a) and heavy (_b) snow; the paint is picked per car from the model's factory colors (materials.js)
 const CARS = ['car2_2107_a', 'car2_2107_b', 'car2_2101_a', 'car2_2101_b', 'car2_2109_a', 'car2_2109_b',
   'car2_niva_a', 'car2_niva_b', 'car2_2141_a', 'car2_2141_b', 'car2_2107_a', 'car2_2101_b', 'car2_buried_a', 'car2_buried_b'];
@@ -43,7 +45,7 @@ const UP = new V3(0, 1, 0);
 const ONE = new V3(1, 1, 1);
 
 export class PanelkaWorld {
-  constructor(scene, assets, seed) {
+  constructor(scene, assets, seed, plan = null) {
     this.kind = 'panelka';
     this.scene = scene;
     this.assets = assets;
@@ -57,12 +59,14 @@ export class PanelkaWorld {
     this.query = 0;
     this.group = new THREE.Group();
     scene.add(this.group);
+    this.interiors = plan ? new Interiors(this, plan) : null;
     this.buildStatic();
   }
 
   setSeed(seed) {
     this.seed = seed >>> 0;
     this.blocks.clear();
+    this.interiors?.reset();
     this.centerKey = null;
     this.prints.count = 0;
     this.printN = 0;
@@ -133,7 +137,7 @@ export class PanelkaWorld {
     const B = {
       bx, bz, cx: bx * PB, cz: bz * PB, type: this.district(bx, bz),
       inst: new Map(), cars: [], cols: [], grid: new Map(), lights: [], pads: [], rects: [], doors: [],
-      emitters: [], trees: [], view: null,
+      emitters: [], trees: [], view: null, sections: [],
     };
     this.streets(B, r);
     if (B.type === 'rows') this.genRows(B, r);
@@ -146,6 +150,11 @@ export class PanelkaWorld {
 
   place(B, name, lx, lz, rot = 0, { collide = true, rect = true, pad = 0.2, car = false } = {}) {
     const it = this.assets.get(name);
+    if (it.interior) {
+      // on a half meter grid, so the shaders get the same building id from its position (interiors.js)
+      lx = Math.round(lx * 2) / 2;
+      lz = Math.round(lz * 2) / 2;
+    }
     const m = new THREE.Matrix4().compose(new V3(B.cx + lx, 0, B.cz + lz), new THREE.Quaternion().setFromAxisAngle(UP, rot), ONE);
     if (car) {
       // cars switch between two levels of detail by distance (updateCars)
@@ -158,11 +167,12 @@ export class PanelkaWorld {
     if (it.lights) {
       for (const [x, y, z, range, kind] of it.lights) this.light(B, new V3(...blenderToThree([x, y, z])).applyMatrix4(m), range, kind);
     }
-    if (it.doors) for (const d of it.doors) B.doors.push({ p: new V3(...blenderToThree(d)).applyMatrix4(m), rot });
+    if (it.doors) for (const d of it.doors) B.doors.push({ p: new V3(...blenderToThree(d)).applyMatrix4(m), rot, inner: !!it.interior });
+    const sections = it.interior && this.interiors ? this.interiors.addBuilding(B, m, it) : null;
     const rb = rotBounds(it.bounds, rot);
     const rc = [lx + rb.minX - pad, lz + rb.minZ - pad, lx + rb.maxX + pad, lz + rb.maxZ + pad];
     if (rect) B.rects.push(rc);
-    return { m, rb, rc, lx, lz, rot, name };
+    return { m, rb, rc, lx, lz, rot, name, sections };
   }
 
   // is there room for this asset here: inside the block, off the roads and paths, not on anything else
@@ -241,7 +251,7 @@ export class PanelkaWorld {
       pl.front = front;
       pl.span = side === 'N' || side === 'S' ? [lx + rb.minX, lx + rb.maxX] : [lz + rb.minZ, lz + rb.maxZ];
       this.entrances(B, r, B.doors.slice(doorsBefore), pl);
-      if (!B.view && this.assets.get(name).h > 12) B.view = this.windowView(B, pl, 13.6, 3.5);
+      if (!B.view && this.assets.get(name).h > 12) B.view = pl.sections ? this.interiors.view(pl.sections, 3.5) : this.windowView(B, pl, 13.6, 3.5);
       return pl;
     }
     return null;
@@ -378,7 +388,7 @@ export class PanelkaWorld {
       pl.drive = pl.front + DRIVE + 3.2;
       pl.span = [lx + rb.minX, lx + rb.maxX];
       this.entrances(B, r, B.doors.slice(doorsBefore), pl);
-      if (!B.view) B.view = this.windowView(B, pl, 11.0, 2.0);
+      if (!B.view) B.view = pl.sections ? this.interiors.view(pl.sections, 2.0) : this.windowView(B, pl, 11.0, 2.0);
       if (prev > -lim) yards.push({ z0: prev, z1: z - 2.5 });
       this.driveway(B, r, 'x', pl.drive, -(PB / 2 - 1), PB / 2 - 1, 1);
       prev = pl.drive + DRIVE + 3.0;
@@ -509,6 +519,12 @@ export class PanelkaWorld {
         }
       }
     }
+    // doors and the roof hatch move, they are not in the grid
+    if (this.interiors) {
+      for (const c of this.interiors.dynCols) {
+        if (c.max.x > x - r && c.min.x < x + r && c.max.z > z - r && c.min.z < z + r) out.push(c);
+      }
+    }
     return out;
   }
 
@@ -552,7 +568,8 @@ export class PanelkaWorld {
         all.get(name).push(...ms);
       }
     }
-    for (const [name, pool] of this.pools) if (!all.has(name) && !name.startsWith('car')) pool.forEach((m) => { m.count = 0; });
+    // cars and the insides of buildings (interiors.js) keep their own lists
+    for (const [name, pool] of this.pools) if (!all.has(name) && !name.startsWith('car') && !isInteriorAsset(name)) pool.forEach((m) => { m.count = 0; });
     for (const [name, ms] of all) this.fillPool(name, ms);
     this.updateCars(this.carCam || new V3(list[0].cx, 0, list[0].cz), true);
     // snow strips: one merged mesh per kind
@@ -674,16 +691,20 @@ export class PanelkaWorld {
   }
 
   spawnPoint() {
-    for (let ring = 0; ring < 4; ring++) {
-      for (let dz = -ring; dz <= ring; dz++) {
-        for (let dx = -ring; dx <= ring; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
-          const b = this.block(dx, dz);
-          if (!b.doors.length) continue;
-          const d = b.doors[Math.min(1, b.doors.length - 1)];
-          const f = new V3(Math.sin(d.rot), 0, Math.cos(d.rot));
-          const p = d.p.clone().addScaledVector(f, 6.5);
-          return { x: p.x, y: 0, z: p.z, yaw: d.rot };
+    // in front of a building you can walk into if there is one near, else at any entrance
+    for (const want of [true, false]) {
+      for (let ring = 0; ring < 4; ring++) {
+        for (let dz = -ring; dz <= ring; dz++) {
+          for (let dx = -ring; dx <= ring; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
+            const b = this.block(dx, dz);
+            const doors = want ? b.doors.filter((d) => d.inner) : b.doors;
+            if (!doors.length) continue;
+            const d = doors[Math.min(want ? 0 : 1, doors.length - 1)];
+            const f = new V3(Math.sin(d.rot), 0, Math.cos(d.rot));
+            const p = d.p.clone().addScaledVector(f, 6.5);
+            return { x: p.x, y: 0, z: p.z, yaw: d.rot };
+          }
         }
       }
     }

@@ -27,6 +27,8 @@ uniform float uFrame;
 varying vec2 vUv;
 
 float density(vec3 p) {
+  // no fog inside the buildings you can walk into
+  if (insideLoaded(p)) return 0.0;
   vec3 q = (p - uDrift) * 0.022;
   float n = texture(tNoise, q).r * 0.62 + texture(tNoise, q * 2.9 + vec3(0.37, 0.11, 0.71) - vec3(0.0, uTime * 0.004, 0.0)).r * 0.38;
   float h = max(p.y, 0.0);
