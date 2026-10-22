@@ -1,0 +1,19 @@
+{
+  "name": "lost-in-panelka",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lost in Panelka: a quiet walk through an endless Soviet microdistrict on a snowy winter night. Three.js, pixel style.",
+  "scripts": {
+    "start": "node server.js",
+    "assets": "/Applications/Blender.app/Contents/MacOS/Blender -b -P data/blender/build_panelka.py",
+    "anims": "python3 data/tools/sa_anims_to_glb.py",
+    "anims:original": "/Applications/Blender.app/Contents/MacOS/Blender -b -P data/blender/animate_player.py",
+    "shots": "node data/tools/shots.js",
+    "shots:menu": "node data/tools/menu_shots.js",
+    "climb": "node data/tools/climb_test.js",
+    "perf": "node data/tools/perf.js",
+    "preview": "node data/tools/preview_shot.js",
+    "pack": "rm -f data/lost-in-panelka.zip && zip -rq data/lost-in-panelka.zip . -x \"data/*\" \"*.zip\" \"*.DS_Store\" \"node_modules/*\" \".git/*\" && ls -lh data/lost-in-panelka.zip"
+  }
+}

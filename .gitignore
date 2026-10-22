@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Blender autosaves
+*.blend1
+
+# generated: QA screenshots and the upload archive
+data/shots/
+data/*.zip
+
+node_modules/

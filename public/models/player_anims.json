@@ -1,0 +1,81 @@
+{
+ "idle": {
+  "source": "IDLE_stance",
+  "duration": 1.5,
+  "loop": true,
+  "speed": 0.0,
+  "contacts": []
+ },
+ "walk": {
+  "source": "WALK_player",
+  "duration": 1.2,
+  "loop": true,
+  "speed": 1.556,
+  "contacts": [
+   0.308,
+   0.833
+  ]
+ },
+ "run": {
+  "source": "run_player",
+  "duration": 0.7333,
+  "loop": true,
+  "speed": 5.706,
+  "contacts": [
+   0.208,
+   0.7
+  ]
+ },
+ "crouch_idle": {
+  "source": "WEAPON_crouch",
+  "duration": 0.8,
+  "loop": true,
+  "speed": 0.0,
+  "contacts": []
+ },
+ "crouch_walk": {
+  "source": "GunCrouchFwd",
+  "duration": 0.7333,
+  "loop": true,
+  "speed": 3.737,
+  "contacts": [
+   0.183,
+   0.658
+  ]
+ },
+ "jump": {
+  "source": "JUMP_glide",
+  "duration": 0.5,
+  "loop": false,
+  "speed": 0.0,
+  "contacts": []
+ },
+ "fly": {
+  "source": "Jetpack_Idle",
+  "duration": 0.0333,
+  "loop": true,
+  "speed": 0.0,
+  "contacts": []
+ },
+ "idle_look": {
+  "source": "roadcross",
+  "duration": 2.0,
+  "loop": false,
+  "speed": 0.0,
+  "contacts": []
+ },
+ "idle_scratch": {
+  "source": "XPRESSscratch",
+  "duration": 3.9667,
+  "loop": false,
+  "speed": 0.0,
+  "contacts": []
+ },
+ "idle_tired": {
+  "source": "IDLE_tired",
+  "duration": 1.0,
+  "loop": true,
+  "speed": 0.0,
+  "contacts": []
+ }
+}

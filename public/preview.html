@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Character Preview</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    #panel {
+      position: absolute;
+      left: calc(var(--px) * 8);
+      top: calc(var(--px) * 8);
+      z-index: 10;
+      padding: calc(var(--px) * 6) calc(var(--px) * 7);
+      min-width: calc(var(--px) * 110);
+    }
+    #panel .pause-head { font-size: calc(var(--px) * 6); }
+    #panel .menu { margin-top: calc(var(--px) * 5); }
+    #panel .menu button { font-size: calc(var(--px) * 4.2); padding-top: calc(var(--px) * 1.8); padding-bottom: calc(var(--px) * 1.8); }
+    #panel .menu button.on { color: var(--ink); background: var(--sun); }
+    #panel .menu button.on::before { background: var(--ink); }
+    #panel .opts { margin-top: calc(var(--px) * 6); display: flex; flex-direction: column; gap: calc(var(--px) * 3); font-size: calc(var(--px) * 3.4); color: var(--sand); }
+    #panel .opt { display: flex; justify-content: space-between; align-items: center; gap: calc(var(--px) * 4); }
+    #panel .note { margin-top: calc(var(--px) * 5); font-size: calc(var(--px) * 3); color: var(--dim); line-height: 1.7; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/addons/" } }
+  </script>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="gl"></canvas>
+    <div id="panel" class="title-box">
+      <div class="pause-head">CHARACTER</div>
+      <nav class="menu" id="clips"></nav>
+      <div class="opts">
+        <div class="opt"><span>Pixel view</span><div class="choice" data-opt="pixel"><button data-v="1" class="on">ON</button><button data-v="0">OFF</button></div></div>
+        <div class="opt"><span>Speed</span><div class="choice" data-opt="speed"><button data-v="0.5">0.5X</button><button data-v="1" class="on">1X</button></div></div>
+        <div class="opt"><span>View</span><div class="choice" data-opt="view"><button data-v="front">FRONT</button><button data-v="side">SIDE</button><button data-v="three">3/4</button></div></div>
+        <div class="opt"><span>Turntable</span><div class="choice" data-opt="spin"><button data-v="1">ON</button><button data-v="0" class="on">OFF</button></div></div>
+      </div>
+      <div class="note">Keys 1 to 9 and 0 switch clips.<br>Drag to orbit, wheel to zoom.</div>
+    </div>
+    <div id="crt"></div>
+  </div>
+  <script type="module" src="js/preview.js"></script>
+</body>
+</html>
