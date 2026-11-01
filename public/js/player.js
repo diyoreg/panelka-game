@@ -6,6 +6,10 @@ const RADIUS = 0.3;
 const STAND_H = 1.8;
 const CROUCH_H = 1.15;
 const STEP = 0.42;          // max ledge height you can just walk onto
+// First person eyes: 0.2 under the top of the head (1.6 m standing). Indoors the view narrows: a wide angle shows
+// a lot of floor under you in a 2.5 m room and makes you feel like a giant.
+const EYE_DROP = 0.2;
+const INDOOR_FOV = 0.82;
 const GRAVITY = 16;
 const JUMP_V = 6.1;
 // close to the speeds the San Andreas clips were made for (models/player_anims.json),
@@ -75,13 +79,18 @@ export class Player {
     this.flying = false;
     this.sprint = false;       // latched by double tapping W
     this.fovKick = 0;          // extra field of view while sprinting or flying fast
+    this.fovScale = 1;         // narrower view inside buildings in first person
     this.camDist = 4.2;
     this.bob = 0;
     this.camPos = new THREE.Vector3();
     this.camLook = new THREE.Vector3();
     this.climb = null;         // { path, t, len } while climbing
     this.indoor = false;       // inside a building (set by main.js): the camera stays closer
+    this.flash = false;        // flashlight on (F)
   }
+
+  // eyes above the feet in first person (and where E reaches from)
+  get eye() { return this.height - EYE_DROP; }
 
   spawn(p) {
     this.pos.set(p.x, p.y, p.z);
@@ -204,6 +213,8 @@ export class Player {
 
     const kick = this.flying ? (running ? 14 : 4) : running && this.speed > 3 ? 7 : 0;
     this.fovKick += (kick - this.fovKick) * Math.min(1, dt * 5);
+    const scale = this.indoor && s.camera === 'first' ? INDOOR_FOV : 1;
+    this.fovScale += (scale - this.fovScale) * Math.min(1, dt * 3);
 
     this.speed = Math.hypot(this.vel.x, this.vel.z);
     this.distance += this.speed * dt;
@@ -374,7 +385,7 @@ export class Player {
     const s = this.settings;
     const p = this.pos;
     if (s.camera === 'first') {
-      const eye = this.height - 0.12;
+      const eye = this.eye;
       let bobY = 0, bobX = 0;
       if (s.headBob && this.onGround && this.speed > 0.3) {
         const ph = this.distance * (this.speed > 4 ? 1.35 : 1.75);

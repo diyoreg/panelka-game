@@ -10,6 +10,7 @@ import math
 import random
 
 from k5i_plan import (W, D, T, END, PL, FH, FLOORS, SLAB, CEIL, DOOR_H, ROOF, M, ROOMS, WALLS, DOORS, DOOR_LEAF,
+                      FRAME, BAL_DOOR_TOP,
                       SWITCHES, SWITCH_Z, WINDOWS, STAIR_WINDOW, LANE_A, LANE_B, STAIR_X, Y_MID, Y_FL, RISE, TREAD,
                       VEST_Z, ENTRANCE, HATCH)
 
@@ -180,7 +181,7 @@ def windows_of_floor(f):
     out = [(s, x0, x1, zf + z0, zf + z1, 'win') for (s, x0, x1, z0, z1, room) in WINDOWS]
     for d in DOORS:
         if d['wall'] == 'back':
-            out.append(('back', d['a0'], d['a1'], zf + d.get('z0', 0.0), zf + 2.25, 'door'))
+            out.append(('back', d['a0'], d['a1'], zf + d.get('z0', 0.0), zf + BAL_DOOR_TOP, 'door'))
     if f < FLOORS - 1:
         x0, x1, z0, z1 = STAIR_WINDOW
         out.append(('front', x0, x1, zf + z0, zf + z1, 'stair'))
@@ -297,18 +298,31 @@ def baseboards(m, zf):
                         pbox(m, sx0, sy0 - ny * 0.014, zf, sx1, sy0, zf + 0.07, 'pk_baseboard')
 
 
-def door_trim(m, w, h0, h1, zf):
-    """Jamb linings inside a door opening and casings on both faces."""
+def door_frame(b, h0, h1, t0, t1, z0, z1, side, leaf_t):
+    """Frame inside an opening: jambs and a head through the whole depth t0..t1, a stop strip behind the leaf.
+    b(a0, a1, s0, s1, z0, z1) draws a box in the coordinates of the wall (along, across, height)."""
+    j = FRAME
+    b(h0, h0 + j, t0, t1, z0, z1)
+    b(h1 - j, h1, t0, t1, z0, z1)
+    b(h0 + j, h1 - j, t0, t1, z1 - j, z1)
+    face = t1 if side > 0 else t0
+    s0 = face - side * (leaf_t + 0.006)
+    s1 = s0 - side * 0.012
+    s0, s1 = min(s0, s1), max(s0, s1)
+    b(h0 + j, h0 + j + 0.012, s0, s1, z0, z1 - j)
+    b(h1 - j - 0.012, h1 - j, s0, s1, z0, z1 - j)
+    b(h0 + j, h1 - j, s0, s1, z1 - j - 0.012, z1 - j)
+
+
+def door_trim(m, w, h0, h1, zf, d):
+    """Frame inside a door opening, casings on both faces, threshold."""
     kind, t0, t1 = w[0], w[1], w[2]
-    j = 0.02
     def b(a0, a1, s0, s1, z0, z1):
         if kind == 'X':
             pbox(m, s0, a0, z0, s1, a1, z1, 'pk_casing')
         else:
             pbox(m, a0, s0, z0, a1, s1, z1, 'pk_casing')
-    b(h0, h0 + j, t0, t1, zf, zf + DOOR_H)
-    b(h1 - j, h1, t0, t1, zf, zf + DOOR_H)
-    b(h0, h1, t0, t1, zf + DOOR_H - j, zf + DOOR_H)
+    door_frame(b, h0, h1, t0, t1, zf, zf + DOOR_H, d['side'], DOOR_LEAF[d['kind']][2])
     for s0, s1 in ((t0 - 0.012, t0), (t1, t1 + 0.012)):
         b(h0 - 0.06, h0, s0, s1, zf, zf + DOOR_H + 0.06)
         b(h1, h1 + 0.06, s0, s1, zf, zf + DOOR_H + 0.06)
@@ -323,12 +337,12 @@ def build_shell():
     for f in range(FLOORS):
         zf = floor_z(f)
         zb = 0.0 if f == 0 else zf
-        for w in WALLS:
+        for wi, w in enumerate(WALLS):
             for a0, a1, z0, z1 in wall_pieces(w, zb, zf, zf + FH):
                 x0, y0, x1, y1 = wall_rect(w, a0, a1)
                 pbox(m, x0, y0, z0, x1, y1, z1, 'pk_wall_int')
             for h0, h1 in w[5]:
-                door_trim(m, w, h0, h1, zf)
+                door_trim(m, w, h0, h1, zf, next(d for d in DOORS if d['wall'] == wi and d['a0'] == h0))
         for r in ROOMS:
             if r['kind'] == 0:
                 continue
@@ -346,9 +360,12 @@ def build_shell():
             window_inside(m, side, x0, x1, z0, z1, kind, rnd)
         for d in DOORS:
             if d['wall'] == 'back':
-                for (a0, a1, za, zb_) in ((d['a0'] - 0.06, d['a0'], zf, zf + 2.31), (d['a1'], d['a1'] + 0.06, zf, zf + 2.31),
-                                         (d['a0'] - 0.06, d['a1'] + 0.06, zf + 2.25, zf + 2.31)):
+                top = zf + BAL_DOOR_TOP
+                for (a0, a1, za, zb_) in ((d['a0'] - 0.06, d['a0'], zf, top + 0.06), (d['a1'], d['a1'] + 0.06, zf, top + 0.06),
+                                         (d['a0'] - 0.06, d['a1'] + 0.06, top, top + 0.06)):
                     pbox(m, a0, D - T - 0.012, za, a1, D - T, zb_, 'pk_casing')
+                door_frame(lambda a0, a1, s0, s1, z0, z1: pbox(m, a0, s0, z0, a1, s1, z1, 'pk_frame_int'),
+                           d['a0'], d['a1'], D - T, D - T + 0.15, zf + d.get('z0', 0.0), top, d['side'], DOOR_LEAF['bal'][2])
         for (room, x, y, nx, ny) in SWITCHES:
             switch(m, x, y, zf + SWITCH_Z, nx, ny)
         sockets(m, zf, rnd)
@@ -365,6 +382,8 @@ def build_shell():
     # entrance: jambs, transom frame
     for (a0, a1, za, zb_) in ((e0 - 0.02, e0, ez0, ez1 + 0.35), (e1, e1 + 0.02, ez0, ez1 + 0.35)):
         pbox(m, a0, 0.0, za, a1, T, zb_, 'pk_casing')
+    door_frame(lambda a0, a1, s0, s1, z0, z1: pbox(m, a0, s0, z0, a1, s1, z1, 'pk_metal'),
+               e0, e1, 0.0, T, ez0, ez1, -1, DOOR_LEAF['entr'][2])
     pbox(m, e0, T - 0.15, ez1, e1, T - 0.08, ez1 + 0.05, 'pk_frame_int')
     pquad(m, [(e0, T - 0.12, ez1 + 0.05), (e1, T - 0.12, ez1 + 0.05), (e1, T - 0.12, ez1 + 0.33), (e0, T - 0.12, ez1 + 0.33)], 'pk_glass_int', (0, 1, 0))
     stair_common(m, rnd)

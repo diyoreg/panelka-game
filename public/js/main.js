@@ -6,6 +6,7 @@ import { makeSignAtlas } from './textures.js';
 import { Assets } from './assets.js';
 import { PanelkaWorld } from './panelka.js';
 import { Snow } from './snow.js';
+import { FlashShadow } from './flash.js';
 import { Player, Input } from './player.js';
 import { Character } from './character.js';
 import { Effects } from './fx.js';
@@ -52,6 +53,7 @@ const sky = makeSky();
 sky.material.depthTest = false;
 scene.add(sky);
 const post = new Post(renderer);
+const flashShadow = new FlashShadow(renderer);
 
 let world, player, rig, fx, snow;
 // auto keeps a light snowfall and brings a blizzard now and then
@@ -402,7 +404,8 @@ addEventListener('keydown', (e) => {
     return;
   }
   if (modal.open) { if (modal.key(e)) e.preventDefault(); return; }
-  if (e.code === 'KeyF' && !e.repeat) {
+  if (e.code === 'F11' && !e.repeat) {
+    e.preventDefault();
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen?.().catch(() => {});
   }
@@ -415,6 +418,10 @@ addEventListener('keydown', (e) => {
   }
   if (mode === 'play') {
     if (e.code === 'Escape' || e.code === 'KeyP') pause();
+    if (e.code === 'KeyF' && !e.repeat) {
+      player.flash = !player.flash;
+      audio.sfx('flash');
+    }
     if (e.code === 'KeyV' && !e.repeat) {
       settings.camera = settings.camera === 'first' ? 'third' : 'first';
       save('settings', settings);
@@ -457,7 +464,7 @@ function interact() {
   const hint = $('#hint');
   if (!I || mode !== 'play') { hint.classList.add('hidden'); return; }
   camera.getWorldDirection(_dir);
-  _eye.set(player.pos.x, player.pos.y + player.height - 0.12, player.pos.z);
+  _eye.set(player.pos.x, player.pos.y + player.eye, player.pos.z);
   const t = I.pick(camera.position, _dir, _eye);
   if (t && input.hit('KeyE')) I.use(t, player);
   const label = I.label(t);
@@ -466,6 +473,30 @@ function interact() {
     hint.dataset.label = label;
     hint.innerHTML = `<span class="key">E</span> ${label}`;
   }
+}
+
+// The flashlight is held in the right hand, a little below and in front of the eyes, and aimed at the point
+// a few meters ahead where you look; in third person from the chest of the character, toward where the camera looks
+const FLASH_CONE = Math.cos(0.36);
+const _fwd = new THREE.Vector3(), _side = new THREE.Vector3(), _aim = new THREE.Vector3();
+function aimFlash() {
+  const on = player.flash && (mode === 'play' || mode === 'pause');
+  U.uFlash.value.w = on ? 1 : 0;
+  if (!on) return;
+  camera.getWorldDirection(_fwd);
+  _side.set(-_fwd.z, 0, _fwd.x).normalize();
+  const o = U.uFlash.value;
+  if (settings.camera === 'first') {
+    o.set(camera.position.x, camera.position.y - 0.3, camera.position.z, 1).addScaledVector(_side, 0.2).addScaledVector(_fwd, 0.2);
+    _aim.copy(camera.position).addScaledVector(_fwd, 4);
+  } else {
+    // in front of the chest along the view (the side vector turned a quarter), a little to the right
+    o.set(player.pos.x + _side.z * 0.3, player.pos.y + player.height * 0.72, player.pos.z - _side.x * 0.3, 1).addScaledVector(_side, 0.25);
+    _aim.copy(camera.position).addScaledVector(_fwd, player.camDist + 5);
+  }
+  o.w = 1;
+  _aim.sub(_side.set(o.x, o.y, o.z)).normalize();
+  U.uFlashDir.value.set(_aim.x, _aim.y, _aim.z, FLASH_CONE);
 }
 
 function frame(now) {
@@ -487,7 +518,7 @@ function frame(now) {
     world.update(player.pos);
 
     // wider view while sprinting or flying fast
-    const fov = settings.fov + (mode === 'play' ? player.fovKick : 0);
+    const fov = mode === 'play' ? settings.fov * player.fovScale + player.fovKick : settings.fov;
     if (Math.abs(camera.fov - fov) > 0.05) { camera.fov = fov; camera.updateProjectionMatrix(); }
 
     if (mode === 'title' || mode === 'splash') {
@@ -509,6 +540,7 @@ function frame(now) {
     }
     rig.update(dt, player, (mode === 'play' || mode === 'pause') && settings.camera !== 'first');
     U.uCamPos.value.copy(camera.position);
+    aimFlash();
     world.updateLights(camera.position);
     if (world.interiors) {
       world.interiors.update(camera.position, dt, world.activeBlocks);
@@ -527,6 +559,7 @@ function frame(now) {
     // snow is drawn over the fog and fades into it on its own (post.js)
     U.uPartFog.value = post.fog.uDensity.value * 0.75;
     audio.update(dt, { gust: fx.gust, steam: fx.nearSteam, snow: snowfall.level, indoor });
+    flashShadow.render(scene, world.group, FLASH_CONE);
     post.render(scene, camera, U.uTime.value);
 
     if (settings.fps) {
@@ -547,7 +580,7 @@ window.__game = {
   get world() { return world; },
   get rig() { return rig; },
   snowfall,
-  camera, renderer, settings, U, post, applySettings,
+  camera, renderer, settings, U, post, flashShadow, applySettings,
   start: () => { audio.init(settings); showTitle(); startGame(); },
   setSeed,
   toTitle,

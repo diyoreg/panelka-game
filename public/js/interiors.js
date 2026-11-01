@@ -5,13 +5,16 @@
 // its own lamp (probeInterior in materials.js). Doors, the roof hatch and light switches react to E.
 
 import * as THREE from 'three';
-import { U, SEC_MAX, OV_MAX, ROOM_BOXES, ROOM_N } from './materials.js';
+import { U, SEC_MAX, OV_MAX, ROOM_BOXES, ROOM_N, PORTAL_N, FLOORS_MAX } from './materials.js';
 
 const LOAD_R = 30;        // sections this close to the camera get their insides
 const REACH = 2.1;        // how far you can reach a door or a switch from your eyes
 const DOOR_SPEED = 2.4;   // share of the swing per second
 const HATCH_OPEN = 1.75;  // radians the roof hatch lifts
 const APTS = ['', 'L', 'R', 'B'];
+// light a closed door lets through (its glass) and how high its glass starts
+const DOOR_GLASS = { kit: [0.5, 0.12], room: [0.35, 0.98], bath: [0.12, 1.6], apt: [0, 0] };
+const FRAME = 0.03;
 const V3 = THREE.Vector3;
 // assets drawn by this module, not by the blocks: the shell, furniture (k5i_L_sov ...), door leaves, the hatch
 export const isInteriorAsset = (name) => /^k5i_(shell|hatch|dr_|[LRB]_)/.test(name);
@@ -65,6 +68,23 @@ export class Interiors {
       }
     }
     this.boxes = P.rooms.flatMap((r) => r.boxes.map((b) => ({ id: r.id, b })));
+    // doorways between two rooms pass light (the balcony doors lead outside)
+    this.portals = [];
+    P.doors.forEach((d, i) => {
+      const v = U.uPortal.value[i], info = U.uPortalInfo.value[i];
+      if (i >= PORTAL_N) return;
+      const across = d.axis === 'X' ? d.hinge[0] : d.hinge[1];
+      // the middle of the wall: the hinge lies on the face the door opens toward
+      const c = across - (d.axis === 'X' ? d.opened[0] : d.opened[1]) * 0.04;
+      const mid = (d.span[0] + d.span[1]) / 2;
+      const side = (s) => (d.axis === 'X' ? this.roomAt(c + s * 0.3, mid) : this.roomAt(mid, c + s * 0.3));
+      const ra = side(-1), rb = side(1);
+      const glass = DOOR_GLASS[d.kind];
+      if (ra < 0 || rb < 0 || !glass) { v.set(0, 0, 0, 2); info.set(-1, -1, 0, 0); return; }
+      v.set(c, d.span[0] + FRAME, d.span[1] - FRAME, d.axis === 'X' ? 0 : 1);
+      info.set(ra, rb, glass[0], glass[1]);
+    });
+    for (let i = P.doors.length; i < PORTAL_N; i++) U.uPortal.value[i].set(0, 0, 0, -1);
   }
 
   // a new seed: the old blocks and their sections are gone
@@ -246,7 +266,12 @@ export class Interiors {
     this.switches = [];
     for (const sec of list) {
       for (let fl = 0; fl < P.FLOORS; fl++) {
-        P.doors.forEach((d, i) => this.doors.push(this.makeDoor(sec, d, fl, i)));
+        P.doors.forEach((d, i) => {
+          const door = this.makeDoor(sec, d, fl, i);
+          door.si = list.indexOf(sec);
+          if (i < PORTAL_N) door.portal = i;
+          this.doors.push(door);
+        });
         for (const s of P.switches) {
           const zf = P.PL + fl * P.FH;
           this.switches.push({ sec, fl, room: s.room, p: this.planToWorld(sec, s.x + s.n[0] * 0.035, zf + s.z, s.y + s.n[1] * 0.035) });
@@ -267,14 +292,12 @@ export class Interiors {
     if (!this.doorState.has(key)) this.doorState.set(key, d.open ? hfrac(sec.bid, sec.index, fl, 200 + (typeof i === 'number' ? i : 99)) < d.open : false);
     const open = this.doorState.get(key);
     const z = fl < 0 ? d.z : P.PL + fl * P.FH + (d.z0 || 0);
-    // the leaf lies flush with the face it opens toward
-    const off = d.thick / 2 + 0.004;
-    const hx = d.hinge[0] + d.opened[0] * off, hy = d.hinge[1] + d.opened[1] * off;
+    // the leaf sits in its frame flush with the face it opens toward and turns about the hinge corner on that face
     const phiC = Math.atan2(d.closed[1], d.closed[0]);
     let delta = Math.atan2(d.opened[1], d.opened[0]) - phiC;
     delta = Math.atan2(Math.sin(delta), Math.cos(delta));
-    const door = { key, kind: d.kind, asset: 'k5i_dr_' + d.kind, sec, fl, room: d.room, hx, hy, z, phiC, delta,
-      w: d.width, t: d.thick, h: d.height, open, angle: open ? 1 : 0 };
+    const door = { key, kind: d.kind, asset: 'k5i_dr_' + d.kind, sec, fl, room: d.room, px: d.hinge[0], py: d.hinge[1],
+      ox: d.opened[0], oy: d.opened[1], z, phiC, delta, w: d.width, t: d.thick, h: d.height, open, angle: open ? 1 : 0 };
     door.colClosed = this.leafBox(door, 0);
     door.colOpen = this.leafBox(door, 1);
     return door;
@@ -300,12 +323,20 @@ export class Interiors {
     return new THREE.Box3(a.clone().min(b), a.clone().max(b));
   }
 
+  // middle of the hinge edge of the leaf at the opening a (0 closed, 1 open), in the plan
+  hingeEdge(d, a) {
+    const r = d.delta * a, c = Math.cos(r), s = Math.sin(r);
+    const bx = -d.ox * d.t / 2, by = -d.oy * d.t / 2;
+    return [d.px + bx * c - by * s, d.py + bx * s + by * c];
+  }
+
   leafBox(d, a) {
     const phi = d.phiC + d.delta * a;
     const cx = Math.cos(phi), cy = Math.sin(phi);
     const nx = -cy * d.t / 2, ny = cx * d.t / 2;
-    const xs = [d.hx + nx, d.hx - nx, d.hx + cx * d.w + nx, d.hx + cx * d.w - nx];
-    const ys = [d.hy + ny, d.hy - ny, d.hy + cy * d.w + ny, d.hy + cy * d.w - ny];
+    const [hx, hy] = this.hingeEdge(d, a);
+    const xs = [hx + nx, hx - nx, hx + cx * d.w + nx, hx + cx * d.w - nx];
+    const ys = [hy + ny, hy - ny, hy + cy * d.w + ny, hy + cy * d.w - ny];
     const s = 0.012;
     return this.planBox(d.sec, Math.min(...xs) + s, Math.min(...ys) + s, Math.max(...xs) - s, Math.max(...ys) - s, d.z + 0.02, d.z + d.h);
   }
@@ -316,7 +347,8 @@ export class Interiors {
     if (d.hatch) {
       m.makeRotationX(d.angle * HATCH_OPEN).setPosition(d.x0, d.z, P.D / 2 - d.y0);
     } else {
-      m.makeRotationY(d.phiC + d.delta * d.angle).setPosition(d.hx, d.z, P.D / 2 - d.hy);
+      const [hx, hy] = this.hingeEdge(d, d.angle);
+      m.makeRotationY(d.phiC + d.delta * d.angle).setPosition(hx, d.z, P.D / 2 - hy);
     }
     return d.sec.matrix.clone().multiply(m);
   }
@@ -329,14 +361,19 @@ export class Interiors {
       return this.planToWorld(d.sec, (d.x0 + d.x1) / 2, d.z + Math.sin(a) * L - 0.15, d.y0 + Math.cos(a) * L);
     }
     const phi = d.phiC + d.delta * d.angle;
-    return this.planToWorld(d.sec, d.hx + Math.cos(phi) * d.w / 2, d.z + 1.05, d.hy + Math.sin(phi) * d.w / 2);
+    const [hx, hy] = this.hingeEdge(d, d.angle);
+    return this.planToWorld(d.sec, hx + Math.cos(phi) * d.w / 2, d.z + 1.05, hy + Math.sin(phi) * d.w / 2);
   }
 
   animateDoors(dt) {
     const byAsset = new Map();
+    const bits = U.uDoorBits.value;
+    bits.fill(0);
     for (const d of this.doors) {
       const goal = d.open ? 1 : 0;
       if (d.angle !== goal) d.angle = goal > d.angle ? Math.min(goal, d.angle + dt * DOOR_SPEED) : Math.max(goal, d.angle - dt * DOOR_SPEED);
+      // a doorway passes the light of the next room once its door is a third open
+      if (d.portal !== undefined && d.angle > 0.3) bits[d.si * FLOORS_MAX + d.fl] += 2 ** d.portal;
       if (!byAsset.has(d.asset)) byAsset.set(d.asset, []);
       byAsset.get(d.asset).push(this.doorMatrix(d));
     }

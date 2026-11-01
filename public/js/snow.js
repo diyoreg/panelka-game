@@ -85,7 +85,7 @@ void main() {
     vec2 q = abs(vUv - 0.5) * 2.0;
     if (q.x > 0.4 && q.y > 0.4) discard;
   }
-  vec3 lamp = lampLight(vWP, normalize(uCamPos - vWP));
+  vec3 lamp = lampLight(vWP, normalize(uCamPos - vWP)) + flashAir(vWP) * 1.4;
   // pale flakes in the color of the air, a soft glint in the lamp light
   vec3 c = uSnowCol * 0.45 + uMist * 0.55 + lamp * 0.9;
   c = applyFog(c, vWP, 1.0);

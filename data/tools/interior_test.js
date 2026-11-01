@@ -41,7 +41,7 @@ window.__qa = (() => {
   qa.press = (sec, lx, lh, ly, onlyOpen) => {
     const pl = G.player;
     const l = qa.world(sec, lx, lh, ly);
-    const eye = new T.Vector3(pl.pos.x, pl.pos.y + pl.height - 0.12, pl.pos.z);
+    const eye = new T.Vector3(pl.pos.x, pl.pos.y + pl.eye, pl.pos.z);
     pl.camYaw = Math.atan2(-(l.x - eye.x), -(l.z - eye.z));
     const dir = l.clone().sub(eye).normalize();
     const t = I.pick(eye, dir, eye);
@@ -56,14 +56,14 @@ window.__qa = (() => {
     let d = null, best = Infinity;
     for (const o of I.doors) {
       if (o.sec !== sec || o.fl !== fl || o.hatch) continue;
-      const dist = Math.hypot(o.hx - x, o.hy - y);
+      const dist = Math.hypot(o.px - x, o.py - y);
       if (dist < best) { best = dist; d = o; }
     }
     if (!d) return { label: 'no door', used: false };
     if (d.open) return { label: 'already open', used: true };
     const pl = G.player;
     const c = I.doorCenter(d);
-    const eye = new T.Vector3(pl.pos.x, pl.pos.y + pl.height - 0.12, pl.pos.z);
+    const eye = new T.Vector3(pl.pos.x, pl.pos.y + pl.eye, pl.pos.z);
     pl.camYaw = Math.atan2(-(c.x - eye.x), -(c.z - eye.z));
     const t = I.pick(eye, c.clone().sub(eye).normalize(), eye);
     if (!t || t.door !== d) return { label: 'aimed at ' + (t ? (t.sw ? 'a switch' : 'another door') : 'nothing'), used: false };

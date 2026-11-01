@@ -96,6 +96,7 @@ export const CONTROLS_HTML = `
 <div class="keys">
   <div>${K('E')}</div><div>Open or close the door you look at, flip a light switch, open the roof hatch. Most of the panel five-storeys let you in: the entrance door, the stairs, the flats are not locked.</div>
   <div>${K('SPACE')}</div><div>Under the open hatch on the top landing: climb out onto the roof.</div>
+  <div>${K('F')}</div><div>Flashlight on and off. Works outside too.</div>
 </div>
 <h3>FLYING</h3>
 <div class="keys">
@@ -108,7 +109,7 @@ export const CONTROLS_HTML = `
 <div class="keys">
   <div>${K('V')}</div><div>Switch between third and first person.</div>
   <div>${K('N')}</div><div>Skip to the next piece of music.</div>
-  <div>${K('F')}</div><div>Fullscreen on and off.</div>
+  <div>${K('F11')}</div><div>Fullscreen on and off.</div>
   <div>${K('ESC')}</div><div>Pause menu. Your walk is saved automatically.</div>
 </div>
 <h3>IN MENUS</h3>

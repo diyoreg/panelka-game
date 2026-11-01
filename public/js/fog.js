@@ -64,7 +64,7 @@ void main() {
     vec3 lamp = lampLight(p, dir);
     // whiter mist low over the street
     vec3 sky = mix(uMist * 0.8, ambientFog, smoothstep(0.0, 12.0, p.y));
-    vec3 light = sky * (0.8 + 0.3 * smoothstep(0.0, 25.0, p.y)) + lamp * lamp * 0.55;
+    vec3 light = sky * (0.8 + 0.3 * smoothstep(0.0, 25.0, p.y)) + lamp * lamp * 0.55 + flashAir(p) * 0.6;
     float a = 1.0 - exp(-d * stepLen);
     S += T * a * light;
     T *= 1.0 - a;

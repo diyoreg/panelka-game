@@ -375,6 +375,12 @@ export class Audio {
       this.burst(900, 2, 0.05, 0.03);
       return;
     }
+    if (kind === 'flash') {
+      // the slide switch of a flashlight: a short dry click
+      this.burst(4200, 4, 0.06, 0.012);
+      this.burst(1500, 3, 0.04, 0.02, 'bandpass', 0.01);
+      return;
+    }
     if (kind === 'bump') { this.burst(120, 1, 0.12, 0.12, 'lowpass'); return; }
     const [act, door] = kind.split('_');
     const metal = door === 'entr' || door === 'hatch';

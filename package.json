@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Lost in Panelka: a quiet walk through an endless Soviet microdistrict on a snowy winter night. Three.js, pixel style.",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.js",
     "assets": "/Applications/Blender.app/Contents/MacOS/Blender -b -P data/blender/build_panelka.py",

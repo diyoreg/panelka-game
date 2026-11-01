@@ -12,6 +12,8 @@ export const SEC_MAX = 6;
 export const OV_MAX = 32;
 export const ROOM_BOXES = 24;
 export const ROOM_N = 16;
+export const PORTAL_N = 20;     // doorways of one floor that pass light from room to room
+export const FLOORS_MAX = 5;
 
 // Shared uniforms: the same objects in every material
 export const U = {
@@ -44,6 +46,14 @@ export const U = {
   uRoomInfo: { value: Array.from({ length: ROOM_N }, () => new THREE.Vector4()) },
   uPlan: { value: new THREE.Vector4(16, 11.4, 1.1, 2.7) },
   uPlanTop: { value: new THREE.Vector2(14.6, 0.3) },
+  uFlash: { value: new THREE.Vector4(0, 0, 0, 0) },      // flashlight: position, on
+  uFlashDir: { value: new THREE.Vector4(0, 0, -1, 0.9) }, // its direction, cosine of the edge of the beam
+  tFlashDepth: { value: null },                            // depth seen from the flashlight (flash.js)
+  uFlashMat: { value: new THREE.Matrix4() },               // world -> its clip space
+  uFlashNF: { value: new THREE.Vector3(0.05, 26, 1 / 1024) }, // its near and far planes, one texel
+  uPortal: { value: Array.from({ length: PORTAL_N }, () => new THREE.Vector4(0, 0, 0, -1)) },
+  uPortalInfo: { value: Array.from({ length: PORTAL_N }, () => new THREE.Vector4(-1, -1, 0, 0)) },
+  uDoorBits: { value: new Array(SEC_MAX * FLOORS_MAX).fill(0) },
   uSnow: { value: 0 },         // snowfall intensity
   uSnowCol: { value: new THREE.Color(0.86, 0.87, 0.9) },
   uCloud: { value: new THREE.Vector2(45, 170) },   // heights where the low cloud deck starts and closes
@@ -79,6 +89,11 @@ uniform vec3 uAmbSky, uAmbGround, uMoonDir, uMoonCol;
 uniform float uSeedOff, uLitAmount;
 uniform float uSnow;
 uniform vec4 uPL[${PK_LIGHTS}];
+uniform vec4 uFlash;
+uniform vec4 uFlashDir;
+uniform sampler2D tFlashDepth;
+uniform mat4 uFlashMat;
+uniform vec3 uFlashNF;
 uniform vec4 uPC[${PK_LIGHTS}];
 uniform vec3 uSnowCol;
 uniform vec2 uCloud;
@@ -149,6 +164,60 @@ vec3 lampLight(vec3 p, vec3 n) {
   return acc;
 }
 
+// The flashlight (F): a warm beam from the hand with a brighter middle. flash.js draws the depth of the scene
+// as the flashlight sees it; a point farther from it than that depth is in the shadow of something.
+const vec3 FLASH_COL = vec3(1.0, 0.9, 0.74);
+float flashLinear(float d) {
+  float n = uFlashNF.x, f = uFlashNF.y;
+  return 2.0 * n * f / (f + n - (d * 2.0 - 1.0) * (f - n));
+}
+// 1 lit, 0 in shadow; taps: 5 for surfaces (soft edge), 1 in the air
+float flashShadow(vec3 p, float bias, bool soft) {
+  vec4 c = uFlashMat * vec4(p, 1.0);
+  if (c.w <= 0.0) return 1.0;
+  vec3 q = c.xyz / c.w;
+  if (abs(q.x) > 1.0 || abs(q.y) > 1.0) return 1.0;
+  vec2 uv = q.xy * 0.5 + 0.5;
+  float z = flashLinear(q.z * 0.5 + 0.5) - bias;
+  if (!soft) return step(z, flashLinear(texture2D(tFlashDepth, uv).r));
+  float t = uFlashNF.z * 1.5;
+  float lit = step(z, flashLinear(texture2D(tFlashDepth, uv).r));
+  lit += step(z, flashLinear(texture2D(tFlashDepth, uv + vec2(t, 0.0)).r));
+  lit += step(z, flashLinear(texture2D(tFlashDepth, uv - vec2(t, 0.0)).r));
+  lit += step(z, flashLinear(texture2D(tFlashDepth, uv + vec2(0.0, t)).r));
+  lit += step(z, flashLinear(texture2D(tFlashDepth, uv - vec2(0.0, t)).r));
+  return lit * 0.2;
+}
+float flashBeam(vec3 p, out vec3 l, out float dist) {
+  vec3 d = p - uFlash.xyz;
+  dist = length(d);
+  l = d / max(dist, 1e-3);
+  float c = dot(l, uFlashDir.xyz);
+  float cone = smoothstep(uFlashDir.w, uFlashDir.w + 0.035, c) * (0.45 + 0.55 * smoothstep(uFlashDir.w + 0.04, 0.997, c));
+  return cone / (1.0 + dist * dist * 0.11) * (1.0 - smoothstep(16.0, 26.0, dist));
+}
+vec3 flashLight(vec3 p, vec3 n) {
+  if (uFlash.w < 0.5) return vec3(0.0);
+  vec3 l;
+  float dist;
+  float b = flashBeam(p, l, dist);
+  if (b <= 0.0) return vec3(0.0);
+  float ndl = dot(n, -l);
+  // pushed off the surface along its normal and compared with some slack, more far away (a texel of the depth
+  // covers more) and where the beam grazes the surface: no shadow acne
+  float sh = flashShadow(p + n * (0.01 + 0.002 * dist), 0.01 + 0.0015 * dist / max(abs(ndl), 0.15), true);
+  return FLASH_COL * (b * sh * (0.15 + 0.85 * max(ndl, 0.0)) * 1.9);
+}
+// the beam in the air (fog, snowflakes), with the shadows of what stands in it
+vec3 flashAir(vec3 p) {
+  if (uFlash.w < 0.5) return vec3(0.0);
+  vec3 l;
+  float dist;
+  float b = flashBeam(p, l, dist);
+  if (b <= 0.0) return vec3(0.0);
+  return FLASH_COL * b * flashShadow(p, 0.05, false);
+}
+
 // ---- inside the khrushchyovka. Sections near the camera have their rooms drawn (interiors.js). A point inside
 // one of them is lit only by the lamp of its own room, so light never leaks through walls and floors.
 // Whether a room is lit comes from an integer hash of building, section, floor and room, the same one
@@ -164,6 +233,9 @@ uniform vec4 uRoomLamp[${ROOM_N}];   // x, plan y, height above the floor, range
 uniform vec4 uRoomInfo[${ROOM_N}];   // apartment, kind (0 stairwell, 1 kitchen, 2 bath, 3 hall, 4 room)
 uniform vec4 uPlan;                 // section width, depth, first floor level, floor height
 uniform vec2 uPlanTop;              // roof level, entrance hall floor
+uniform vec4 uPortal[${PORTAL_N}];     // doorway: wall plane, opening from, to (along the wall), axis (0 plan x, 1 plan y; < 0 ends)
+uniform vec4 uPortalInfo[${PORTAL_N}]; // rooms on both sides, light let through when closed, bottom of its glass
+uniform float uDoorBits[${SEC_MAX * FLOORS_MAX}];  // open doors of each drawn section and floor, a bit per doorway
 
 uint hmix(uint x) {
   x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; x ^= x >> 16u;
@@ -248,6 +320,65 @@ vec3 gLN = vec3(0.0, 1.0, 0.0);
 vec3 gLampCol = vec3(1.0);
 vec3 gInLight = vec3(0.0);
 
+// Light of the neighbouring rooms coming in through the doorways of this room. An open doorway lets the lamp
+// behind it throw a sharp wedge of light across the floor and the walls (the ray from that lamp must pass
+// through the opening) and glows itself, softly, like a window; a closed door with glass only glows through
+// its glass, a solid one keeps the light in.
+vec3 portalLight(int si, int room, vec3 lp, vec3 ln) {
+  vec3 sum = vec3(0.0);
+  float zf = uPlan.z + float(gFl) * uPlan.w;
+  uint bits = uint(uDoorBits[si * ${FLOORS_MAX} + gFl]);
+  for (int k = 0; k < ${PORTAL_N}; k++) {
+    vec4 pg = uPortal[k];
+    if (pg.w < -0.5) break;
+    vec4 pi = uPortalInfo[k];
+    int other = int(pi.x) == room ? int(pi.y) : int(pi.y) == room ? int(pi.x) : -1;
+    if (other < 0) continue;
+    bool open = ((bits >> uint(k)) & 1u) == 1u;
+    float tr = open ? 1.0 : pi.z;
+    if (tr <= 0.0 || !roomLit(gB, gSec, gFl, other)) continue;
+    int oapt = int(uRoomInfo[other].x);
+    vec3 ocol = lampColor(gB, gSec, gFl, oapt, int(uRoomInfo[other].y), oapt > 0 ? aptStyle(gB, gSec, gFl, oapt) : 0.0);
+    vec4 OL = uRoomLamp[other];
+    vec3 olp = vec3(OL.x, zf + OL.z, OL.y);
+    if (other == 0 && gFl == 0) olp = vec3(8.0, uPlan.z + 1.35 - 0.38, 1.2);
+    // (across the wall, along it) of this point and of the lamp
+    bool ay = pg.w > 0.5;
+    vec2 p2 = ay ? lp.zx : lp.xz;
+    vec2 o2 = ay ? olp.zx : olp.xz;
+    float c = pg.x, a0 = pg.y, a1 = pg.z;
+    float zt = zf + 2.02;
+    float range = OL.w * 1.4;
+    if (open) {
+      float den = p2.x - o2.x;
+      float t = abs(den) > 1e-3 ? (c - o2.x) / den : -1.0;
+      if (t > 0.0 && t < 1.0) {
+        float along = o2.y + t * (p2.y - o2.y);
+        float hz = olp.y + t * (lp.y - olp.y);
+        float inside = smoothstep(a0 - 0.02, a0 + 0.02, along) * (1.0 - smoothstep(a1 - 0.02, a1 + 0.02, along))
+          * (1.0 - smoothstep(zt - 0.02, zt + 0.02, hz)) * step(zf, hz);
+        vec3 d = olp - lp;
+        float d2 = dot(d, d), dist = sqrt(d2);
+        float att = 1.0 / (1.0 + d2 * 2.5 / (OL.w * OL.w)) * (1.0 - smoothstep(range * 0.6, range, dist));
+        sum += ocol * (inside * att * max(dot(ln, d / dist), 0.0) * 0.7);
+      }
+    }
+    // the opening (or its glass) glows with the light of the room behind it
+    float zl = open ? zf : zf + pi.w, zh = open ? zt : zf + 1.91;
+    vec2 q = vec2(clamp(p2.y, a0, a1), clamp(lp.y, zl, zh));
+    vec3 Q = ay ? vec3(q.x, q.y, c) : vec3(c, q.y, q.x);
+    vec3 mid = ay ? vec3((a0 + a1) * 0.5, zf + 1.2, c) : vec3(c, zf + 1.2, (a0 + a1) * 0.5);
+    vec3 od = olp - mid;
+    float glow = 0.78 / (1.0 + dot(od, od) * 2.5 / (OL.w * OL.w)) + 0.12;
+    vec3 dq = Q - lp;
+    float dq2 = dot(dq, dq), dql = sqrt(dq2) + 1e-3;
+    float facing = abs(p2.x - c) / dql;
+    float area = (a1 - a0) * (zh - zl);
+    sum += ocol * (tr * glow * area * 0.16 * facing / (0.3 + dq2) * (0.35 + 0.65 * max(dot(ln, dq / dql), 0.0)));
+  }
+  return sum;
+}
+
 void probeInterior(vec3 wp, vec3 n) {
   if (uSecN < 0.5) return;
   vec3 lp;
@@ -284,10 +415,11 @@ void probeInterior(vec3 wp, vec3 n) {
   float att = 1.0 / (1.0 + d2 * 2.5 / (L.w * L.w)) * (1.0 - smoothstep(L.w * 0.55, L.w, dist));
   float ndl = 0.3 + 0.7 * max(dot(ln, d / max(dist, 1e-3)), 0.0);
   // direct light plus the light bounced around a small room
-  gInLight = amb + (on ? gLampCol * (att * ndl * 0.78 + 0.12) : vec3(0.0));
+  vec3 light = amb + (on ? gLampCol * (att * ndl * 0.78 + 0.12) : vec3(0.0));
+  gInLight = light + portalLight(i, room, lp, ln);
 }
 
-vec3 lightAt(vec3 p, vec3 n) { return gIn > 0.5 ? gInLight : ambient(n) + lampLight(p, n); }
+vec3 lightAt(vec3 p, vec3 n) { return (gIn > 0.5 ? gInLight : ambient(n) + lampLight(p, n)) + flashLight(p, n); }
 
 // Fresh snow lying on everything that faces up
 float snowAmount(vec3 n, vec3 wp) {
@@ -940,6 +1072,16 @@ void main() {
   }
 #endif
 
+#ifdef MODE_FROSTED
+  // frosted glass of an inner door: it glows with the light of the room behind it too
+  {
+    vec3 front = lightAt(vWP, n);
+    vec3 back = vec3(0.0);
+    if (gIn > 0.5) { probeInterior(vWP, -n); back = gInLight; }
+    col = baseColor() * (front * 0.6 + back * 0.8);
+  }
+#endif
+
 #ifdef MODE_GLASSINT
   col = skyColor(reflect(normalize(vWP - uCamPos), n)) * 0.3 + gInLight * 0.2;
   alpha = 0.16;
@@ -1183,7 +1325,7 @@ const DEFS = (() => {
     pk_casing: { mode: 'flat', tint: C(0.84, 0.82, 0.78) },
     pk_frame_int: { mode: 'flat', tint: C(0.86, 0.86, 0.83) },
     pk_glass_int: { mode: 'glassint', blend: true, double: true },
-    pk_glass_door: { mode: 'flat', tint: C(0.66, 0.7, 0.7) },
+    pk_glass_door: { mode: 'frosted', tint: C(0.66, 0.7, 0.7) },
     pk_door_int: { mode: 'flat', tint: C(0.86, 0.86, 0.82) },
     pk_dermantin: { mode: 'flat', tint: C(0.3, 0.15, 0.08) },
     pk_baseboard: { mode: 'tex', tex: 'wood_dark', scale: 0.8, tint: C(0.8, 0.6, 0.48) },

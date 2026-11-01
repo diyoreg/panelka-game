@@ -16,6 +16,10 @@ npm start
 
 Then open http://localhost:3001 (port 3001, so it can run next to Walk and Relax on 3000). On macOS you can also double-click `start.command`.
 
+### Deploy on Railway
+
+Create a new project from the GitHub repo; `railway.json` sets the start command and the health check. Railway passes `PORT`, the server reads it. Then open Settings → Networking → Generate Domain. The server gzips text and models and answers repeat visits with 304, so only the first load downloads the assets.
+
 All hints, controls and the description live in the menu (Controls, About). The game view itself has no HUD.
 
 ## Controls
@@ -30,9 +34,10 @@ All hints, controls and the description live in the menu (Controls, About). The 
 | Space twice | fly on or off (Space up, C down, Shift fast, landing ends the flight) |
 | C | crouch (toggle or hold, see Settings) |
 | E | open or close the door you look at, flip a light switch, open the roof hatch |
+| F | flashlight on or off |
 | V | third or first person |
 | N | next piece of music |
-| F | fullscreen |
+| F11 | fullscreen |
 | Esc | pause menu |
 
 ## How it works
@@ -41,7 +46,7 @@ All hints, controls and the description live in the menu (Controls, About). The 
 
 **Buildings.** They follow the common series: 1-464 / 1-447 five-storeys (3.2 m module, 2.7 m floors, pitched tin roofs with dormers and drainpipes on the brick ones) and II-49 / P-44 type 9, 12 and 16-storey blocks (3.0 m module, 2.8 m floors, lift rooms and TV antennas on the roof). Windows are real recesses with reveals and tin sills that catch the snow; the glass is drawn by a shader that reads the apartment, floor and kind of window from the UVs: wooden or plastic frames with a vent pane, net curtains and drapes, pot plants, ceiling lamps, a TV, dim stairwell bulbs, apartments switching their lights over time. Balconies are open (painted sheets, lattice, concrete), or glazed with wooden or plastic frames, with skis, boxes and frozen laundry; you can stand on them and climb from one floor to the next.
 
-**Inside the five-storeys.** The panel five-storeys `k5i_3` and `k5i_4` (series 1-464, no lift, as in real life) can be walked into. Their plan is data in `data/blender/k5i_plan.py`: a section of 16 x 11.4 m, floors 2.7 m with 2.48 m ceilings; a two-flight stair with the entrance under the first half landing, five steps up to the first floor, a hatch with a steel ladder up to the roof; three flats per landing: B with one room (32 m2), R with two (45 m2, the bedroom walked through the living room), L with three (58 m2), each with a combined bath, a 6 m2 kitchen, balconies on the back. `data/blender/k5i.py` builds the colliders of the structure into the building (walls with door openings, slabs, treads, rails, the roof with its hatch), the inside of a section (`k5i_shell`), the furniture of every flat in two styles (`k5i_L_sov`, `k5i_L_xp`, ...: the Soviet flat with its wall unit, carpets, ZIL fridge and gas heater, the 2000s one with laminate, a leather sofa and a computer with Windows XP) and the door leaves. In the game (`public/js/interiors.js`) only the sections within 30 m of the camera (six at most) get their insides drawn; furniture collides everywhere. Each flat's style, who is at home and which rooms are lit come from an integer hash of building, section, floor and room, computed the same way in JS and in the shaders, so the windows on the facade always show what is behind them. A point inside a drawn section is lit only by the lamp of its own room (the room is looked up in the plan), so light does not leak through walls; finishes (wallpaper, tiles, oil paint, parquet, linoleum, laminate) are picked per room in the shader. Doors and the hatch are moving colliders; a door does not close on you. Switches you flip are kept for the session (the newest 32).
+**Inside the five-storeys.** The panel five-storeys `k5i_3` and `k5i_4` (series 1-464, no lift, as in real life) can be walked into. Their plan is data in `data/blender/k5i_plan.py`: a section of 16 x 11.4 m, floors 2.7 m with 2.48 m ceilings; a two-flight stair with the entrance under the first half landing, five steps up to the first floor, a hatch with a steel ladder up to the roof; three flats per landing: B with one room (32 m2), R with two (45 m2, the bedroom walked through the living room), L with three (58 m2), each with a combined bath, a 6 m2 kitchen, balconies on the back. `data/blender/k5i.py` builds the colliders of the structure into the building (walls with door openings, slabs, treads, rails, the roof with its hatch), the inside of a section (`k5i_shell`), the furniture of every flat in two styles (`k5i_L_sov`, `k5i_L_xp`, ...: the Soviet flat with its wall unit, carpets, ZIL fridge and gas heater, the 2000s one with laminate, a leather sofa and a computer with Windows XP) and the door leaves. In the game (`public/js/interiors.js`) only the sections within 30 m of the camera (six at most) get their insides drawn; furniture collides everywhere. Each flat's style, who is at home and which rooms are lit come from an integer hash of building, section, floor and room, computed the same way in JS and in the shaders, so the windows on the facade always show what is behind them. A point inside a drawn section is lit by the lamp of its own room (the room is looked up in the plan), so light does not leak through walls, and by the rooms next to it through the doorways: an open doorway lets the lamp behind it throw a sharp wedge of light across the floor (the ray from that lamp must pass through the opening) and glows softly itself, a closed door glows only through its frosted glass, a solid one keeps the light in (`portalLight` in `materials.js`, the open doors go to the shaders as a bit per doorway). Every door hangs in a frame with a stop, 3 mm of play around the leaf, and turns about its hinge corner. In first person the eyes are at 1.6 m and indoors the view narrows to 82% of the field of view setting, so a 2.5 m room does not feel like a doll's house. The flashlight is a warm spotlight held in the right hand, a little below and in front of the eyes, aimed where you look; it lights the fog and the snowflakes too, and it throws shadows: while it is on, `flash.js` draws the depth of the scene as the flashlight sees it into a 1024 x 1024 texture (glass, curtains, foliage cards, the ground and the player left out) and every shader compares its distance with it (`flashShadow` in `materials.js`, five taps for a soft edge, one in the fog); finishes (wallpaper, tiles, oil paint, parquet, linoleum, laminate) are picked per room in the shader. Doors and the hatch are moving colliders; a door does not close on you. Switches you flip are kept for the session (the newest 32).
 
 **Cars.** VAZ-2101, 2107, 2109, Niva, Moskvich-2141, built from the reference sheets in `data/sources/*.jpeg`: lofted smooth bodies with real wheel arches, chrome or plastic bumpers, lights, mirrors, tires with rims, snow blankets that follow the panels, and every one gets a factory color of its model; past 42 m a low polygon twin (`*_lod`) is drawn instead.
 
@@ -73,6 +78,7 @@ public/js/weather.js         snowfall intensity: auto cycle with blizzards, or a
 public/js/fx.js              wind (drives fog, snow, sound) and steam particles (block.emitters, unused yet)
 public/js/post.js            low-res render, fog, snow layer, bloom, grade, dithering
 public/js/fog.js             volumetric fog ray march and its 3D noise
+public/js/flash.js           shadows of the flashlight: the depth pass from its point of view
 public/js/player.js          movement, jump, crouch, climbing, flying, collisions, camera
 public/js/character.js       animated player: clip state machine, idle variations, footsteps
 public/js/audio.js           music shuffle with crossfades, synthesized ambience
@@ -113,6 +119,7 @@ npm run climb        # climbs a stack of balconies
 npm run interiors    # inside a five-storey: flood fill of every floor with the player's size and step, then a
                      # walk with the real physics through the entrance, up the stairs, into every flat and room,
                      # out on the balconies, switches, the hatch and the roof; screenshots in data/shots/in-*.png
+node data/tools/look.js <dir> <script.js>   # screenshots inside a five-storey, driven by a small script
 npm run perf         # block generation time, draw calls, jump, crouch, wall collisions
 npm run preview      # rewrites public/img/preview.jpg and cover.jpg
 ```

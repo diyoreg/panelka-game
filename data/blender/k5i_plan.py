@@ -110,9 +110,15 @@ DOORS = [
     dict(kind='room', wall=4, a0=5.8, a1=6.7, hinge=0, side=1, room=15, open=0.6),
     dict(kind='bal', wall='back', a0=10.05, a1=10.85, hinge=0, side=-1, room=15, open=0.0, z0=0.06),
 ]
-# leaf width, height, thickness; the opening is 0.04 wider for the jambs plus a few centimeters of play
-DOOR_LEAF = {'apt': (0.88, 2.0, 0.06), 'room': (0.84, 2.0, 0.04), 'kit': (0.84, 2.0, 0.04),
-             'bath': (0.74, 2.0, 0.04), 'bal': (0.74, 2.15, 0.06), 'entr': (0.95, 1.88, 0.06)}
+# Every opening gets a frame (korobka): jambs and a head FRAME thick inside the hole, a stop strip behind the leaf.
+# The leaf hangs inside the frame with GAP of play on every side and its face flush with the wall face it opens
+# toward; LIFT is the gap above the floor (over the threshold).
+FRAME, GAP, LIFT = 0.03, 0.003, 0.015
+# opening width, leaf height, leaf thickness; the leaf width follows from the opening
+DOOR_OPEN = {'apt': (0.95, 2.0, 0.06), 'room': (0.9, 2.0, 0.04), 'kit': (0.9, 2.0, 0.04),
+             'bath': (0.8, 2.0, 0.04), 'bal': (0.8, 2.14, 0.06), 'entr': (1.0, 1.86, 0.06)}
+DOOR_LEAF = {k: (round(o - 2 * (FRAME + GAP), 3), h, t) for k, (o, h, t) in DOOR_OPEN.items()}
+BAL_DOOR_TOP = 2.25      # head of the balcony door opening above the floor
 
 # Light switches: (room, x, y, nx, ny), 1.5 m above the floor on the wall face. Bath switches are in the hall.
 SWITCH_Z = 1.5
@@ -154,26 +160,28 @@ def as_json():
         else:
             w = WALLS[d['wall']]
             t0, t1, axis = w[1], w[2], w[0]
-        face = t1 if d['side'] > 0 else t0
-        ha = d['a1'] if d['hinge'] else d['a0']
-        oa = d['a0'] if d['hinge'] else d['a1']
+        assert abs(d['a1'] - d['a0'] - DOOR_OPEN[d['kind']][0]) < 1e-6, d
+        # the hinge axis: the corner of the leaf on the face it opens toward, inside the frame
+        face = (t1 if d['side'] > 0 else t0) - d['side'] * 0.002
+        ha = d['a1'] - FRAME - GAP if d['hinge'] else d['a0'] + FRAME + GAP
+        along = -1.0 if d['hinge'] else 1.0
         if axis == 'X':
-            hinge, closed = (face, ha), (0.0, 1.0 if oa > ha else -1.0)
+            hinge, closed = (face, ha), (0.0, along)
             opened = (float(d['side']), 0.0)
         else:
-            hinge, closed = (ha, face), (1.0 if oa > ha else -1.0, 0.0)
+            hinge, closed = (ha, face), (along, 0.0)
             opened = (0.0, float(d['side']))
         w_, h_, t_ = DOOR_LEAF[d['kind']]
-        doors.append(dict(kind=d['kind'], hinge=[round(hinge[0], 3), round(hinge[1], 3)], closed=closed, opened=opened,
-                          width=w_, height=h_, thick=t_, z0=d.get('z0', 0.0), room=d['room'], open=d['open'],
+        doors.append(dict(kind=d['kind'], hinge=[round(hinge[0], 4), round(hinge[1], 4)], closed=closed, opened=opened,
+                          width=w_, height=h_, thick=t_, z0=d.get('z0', 0.0) + LIFT, room=d['room'], open=d['open'],
                           span=[d['a0'], d['a1']], axis=axis))
     return dict(
         W=W, D=D, T=T, END=END, PL=PL, FH=FH, FLOORS=FLOORS, CEIL=CEIL, ROOF=ROOF, VEST_Z=VEST_Z,
         rooms=[dict(id=r['id'], apt=r['apt'], kind=r['kind'], name=r['name'], boxes=r['boxes'], lamp=r['lamp']) for r in ROOMS],
         doors=doors,
-        entrance=dict(kind='entr', hinge=[ENTRANCE[1], 0.0], closed=(-1.0, 0.0), opened=(0.0, -1.0),
+        entrance=dict(kind='entr', hinge=[ENTRANCE[1] - FRAME - GAP, 0.002], closed=(-1.0, 0.0), opened=(0.0, -1.0),
                       width=DOOR_LEAF['entr'][0], height=DOOR_LEAF['entr'][1], thick=DOOR_LEAF['entr'][2],
-                      z=ENTRANCE[2], span=[ENTRANCE[0], ENTRANCE[1]]),
+                      z=ENTRANCE[2] + 0.005, span=[ENTRANCE[0], ENTRANCE[1]]),
         hatch=dict(box=HATCH, z=ROOF - SLAB),
         switches=[dict(room=s[0], x=s[1], y=s[2], z=SWITCH_Z, n=[s[3], s[4]]) for s in SWITCHES],
         stair=dict(laneA=LANE_A, laneB=LANE_B, yMid=Y_MID, yFloor=Y_FL, rise=RISE, tread=TREAD),
