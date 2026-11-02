@@ -149,7 +149,7 @@ export const SETTINGS_DEF = [
   { key: 'sens', label: 'Mouse sensitivity', type: 'range', min: 0.2, max: 3, step: 0.1, fmt: (v) => v.toFixed(1) },
   { key: 'invertY', label: 'Invert mouse Y', type: 'choice', options: [[false, 'OFF'], [true, 'ON']] },
   { key: 'fov', label: 'Field of view', type: 'range', min: 50, max: 100, step: 1, fmt: (v) => v + '°' },
-  { key: 'pixel', label: 'Pixel size', note: 'Bigger pixels look chunkier and run faster', type: 'range', min: 2, max: 8, step: 1, fmt: (v) => v + 'x' },
+  { key: 'pixel', label: 'Pixel size', note: 'Bigger pixels look chunkier and run faster, 0x is full screen resolution', type: 'range', min: 0, max: 8, step: 1, fmt: (v) => v + 'x' },
   { key: 'view', label: 'View distance', note: 'How many blocks are built around you', type: 'choice', options: [['near', 'NEAR'], ['normal', 'NORMAL'], ['far', 'FAR']] },
   { key: 'camera', label: 'Camera', type: 'choice', options: [['third', 'BEHIND'], ['first', 'EYES']] },
   { key: 'crouchToggle', label: 'Crouch key', type: 'choice', options: [[true, 'TOGGLE'], [false, 'HOLD']] },

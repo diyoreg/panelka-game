@@ -62,7 +62,8 @@ let baseVol = 0.03;
 
 function resize() {
   fitPixels();
-  const px = settings.pixel;
+  // 0x renders at the screen's own resolution (retina included), no pixelation at all
+  const px = settings.pixel || 1 / (devicePixelRatio || 1);
   const w = Math.max(160, Math.ceil(innerWidth / px));
   const h = Math.max(90, Math.ceil(innerHeight / px));
   renderer.setSize(w, h, false);
