@@ -15,7 +15,10 @@ The roof is reached through a hatch over the top landing.
 
 This file is plain data, the game reads it as public/models/k5i_plan.json (written by build_panelka.py).
 """
+import sys
 
+NAME = 'k5i'               # asset prefix
+BASE = 0                   # its room ids in the game start here (the shaders keep the rooms of every plan in one list)
 W, D = 16.0, 11.4
 T = 0.35                 # outer walls
 END = 0.27               # the end walls of the building stick out this far past the first and last section
@@ -42,7 +45,13 @@ RISE = FH / 16           # 16 risers per floor, 8 per flight
 TREAD = 0.28
 VEST_Z = 0.3             # entrance hall floor
 ENTRANCE = (7.5, 8.5, VEST_Z, 2.2)
+XC = 8.0                 # middle of the stairwell
+Y_LAND = 5.53            # the floor landings reach back to this wall
+SLAB_HOLES = [(6.33, 0.0, 9.67, Y_LAND)]   # where the floor slabs are open: the stairwell
+SOLIDS = []              # solid blocks through every floor (none here)
+PANEL = ('Y', 6.75, 7.3, Y_LAND, -1)       # electric panel on the landing: wall axis, from, to, wall face, facing
 HATCH = (6.62, 4.42, 7.62, 5.42)   # x0, y0, x1, y1 of the roof hatch over the top landing
+LADDER = (6.85, 7.35, 5.35)        # steel ladder up to the hatch: x of its two rails, y of the rungs
 
 # kinds: 0 stairwell, 1 kitchen, 2 bath, 3 hall, 4 room. apt: 0 stairwell, 1 L, 2 R, 3 B
 ROOMS = [
@@ -138,6 +147,12 @@ WINDOWS = [
     ('back', 11.0, 12.2, 0.85, 2.3, 15), ('back', 13.65, 15.15, 0.85, 2.3, 11),
 ]
 STAIR_WINDOW = (7.4, 8.6, 1.35 + 0.85, 1.35 + 2.05)   # above every half landing except the top one
+# sockets: (room, x, y, nx, ny, height)
+SOCKETS = [(1, 3.27, 1.7, 1, 0, 1.1), (4, 6.33, 7.0, -1, 0, 0.3), (4, 3.27, 9.6, 1, 0, 0.3), (5, 0.08, 9.4, 1, 0, 0.3),
+           (6, 0.08, 1.0, 1, 0, 0.3), (7, 12.73, 1.7, -1, 0, 1.1), (10, 15.92, 1.2, -1, 0, 0.3), (10, 12.87, 3.95, 1, 0, 0.3),
+           (11, 15.92, 9.6, -1, 0, 0.3), (14, 6.47, 10.4, 1, 0, 1.1), (15, 12.73, 9.6, -1, 0, 0.3), (15, 9.67, 10.3, 1, 0, 0.3)]
+VIEW = (14.4, 0.95, 3)   # the title camera: plan x, y at a window and the floor
+ELEVATOR = None          # the five-storey has no lift
 
 
 def module_center(j):
@@ -152,13 +167,19 @@ def wall_box(w):
 
 
 def as_json():
-    """What the game needs: sizes, rooms, doors with their hinges, switches, windows."""
+    return export(sys.modules[__name__])
+
+
+def export(P):
+    """What the game needs from the plan module P: sizes, rooms, doors with their hinges, switches, windows."""
     doors = []
-    for i, d in enumerate(DOORS):
+    for i, d in enumerate(P.DOORS):
         if d['wall'] == 'back':
-            t0, t1, axis = D - T, D - T + 0.15, 'Y'
+            t0, t1, axis = P.D - P.T, P.D - P.T + 0.15, 'Y'
+        elif d['wall'] == 'front':
+            t0, t1, axis = P.T - 0.15, P.T, 'Y'
         else:
-            w = WALLS[d['wall']]
+            w = P.WALLS[d['wall']]
             t0, t1, axis = w[1], w[2], w[0]
         assert abs(d['a1'] - d['a0'] - DOOR_OPEN[d['kind']][0]) < 1e-6, d
         # the hinge axis: the corner of the leaf on the face it opens toward, inside the frame
@@ -175,14 +196,17 @@ def as_json():
         doors.append(dict(kind=d['kind'], hinge=[round(hinge[0], 4), round(hinge[1], 4)], closed=closed, opened=opened,
                           width=w_, height=h_, thick=t_, z0=d.get('z0', 0.0) + LIFT, room=d['room'], open=d['open'],
                           span=[d['a0'], d['a1']], axis=axis))
+    E = P.ENTRANCE
     return dict(
-        W=W, D=D, T=T, END=END, PL=PL, FH=FH, FLOORS=FLOORS, CEIL=CEIL, ROOF=ROOF, VEST_Z=VEST_Z,
-        rooms=[dict(id=r['id'], apt=r['apt'], kind=r['kind'], name=r['name'], boxes=r['boxes'], lamp=r['lamp']) for r in ROOMS],
+        name=P.NAME, base=P.BASE, apts=P.APTS, xc=P.XC, yLand=P.Y_LAND, view=P.VIEW, elevator=P.ELEVATOR,
+        W=P.W, D=P.D, T=P.T, END=P.END, PL=P.PL, FH=P.FH, FLOORS=P.FLOORS, CEIL=P.CEIL, ROOF=P.ROOF, VEST_Z=P.VEST_Z,
+        rooms=[dict(id=r['id'], apt=r['apt'], kind=r['kind'], name=r['name'], boxes=r['boxes'], lamp=r['lamp']) for r in P.ROOMS],
         doors=doors,
-        entrance=dict(kind='entr', hinge=[ENTRANCE[1] - FRAME - GAP, 0.002], closed=(-1.0, 0.0), opened=(0.0, -1.0),
+        entrance=dict(kind='entr', hinge=[E[1] - FRAME - GAP, 0.002], closed=(-1.0, 0.0), opened=(0.0, -1.0),
                       width=DOOR_LEAF['entr'][0], height=DOOR_LEAF['entr'][1], thick=DOOR_LEAF['entr'][2],
-                      z=ENTRANCE[2] + 0.005, span=[ENTRANCE[0], ENTRANCE[1]]),
-        hatch=dict(box=HATCH, z=ROOF - SLAB),
-        switches=[dict(room=s[0], x=s[1], y=s[2], z=SWITCH_Z, n=[s[3], s[4]]) for s in SWITCHES],
-        stair=dict(laneA=LANE_A, laneB=LANE_B, yMid=Y_MID, yFloor=Y_FL, rise=RISE, tread=TREAD),
+                      z=E[2] + 0.005, span=[E[0], E[1]]),
+        hatch=dict(box=P.HATCH, z=P.ROOF - P.SLAB),
+        ladder=dict(x0=P.LADDER[0], x1=P.LADDER[1], y=P.LADDER[2], z0=P.PL + (P.FLOORS - 1) * P.FH, ceil=P.ROOF - P.SLAB),
+        switches=[dict(room=s[0], x=s[1], y=s[2], z=P.SWITCH_Z, n=[s[3], s[4]]) for s in P.SWITCHES],
+        stair=dict(laneA=P.LANE_A, laneB=P.LANE_B, yMid=P.Y_MID, yFloor=P.Y_FL, rise=P.RISE, tread=P.TREAD),
     )

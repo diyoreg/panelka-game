@@ -24,9 +24,9 @@ const check = (ok, what) => { console.log((ok ? 'ok   ' : 'FAIL ') + what); if (
 // helpers that live in the page
 const HELPERS = `
 window.__qa = (() => {
-  const G = __game, W = G.world, I = W.interiors, P = I.plan, T = G.THREE;
+  const G = __game, W = G.world, I = W.interiors, P = I.plans.k5i, T = G.THREE;
   const qa = {};
-  qa.sec = () => I.loaded.slice().sort((a, b) => a.center.distanceTo(G.player.pos) - b.center.distanceTo(G.player.pos))[0];
+  qa.sec = () => I.loaded.filter((s) => s.P === P).sort((a, b) => a.center.distanceTo(G.player.pos) - b.center.distanceTo(G.player.pos))[0];
   qa.world = (sec, x, h, y) => I.planToWorld(sec, x, h, y);
   qa.plan = (sec, p) => I.toPlan(sec, p).clone();
   qa.fz = (f) => P.PL + f * P.FH;
@@ -94,6 +94,29 @@ window.__qa = (() => {
         if (still > 4 || t > 30) {
           inp.keys.delete('KeyW');
           resolve({ ok: false, at: i, pos: pl.pos.clone(), plan: qa.plan(sec, pl.pos), want: pts[i] });
+          return;
+        }
+      }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+  // hold a key with the real physics, looking toward a plan point, until done() or a timeout
+  qa.hold = (sec, key, lx, ly, pitch, done, maxT = 20) => new Promise((resolve) => {
+    const pl = G.player, inp = G.input;
+    let t = 0, held = false;
+    const step = () => {
+      for (let k = 0; k < 5; k++) {
+        const l = qa.world(sec, lx, pl.pos.y, ly);
+        pl.camYaw = Math.atan2(-(l.x - pl.pos.x), -(l.z - pl.pos.z));
+        pl.camPitch = pitch;
+        inp.keys.add(key);
+        pl.update(1 / 60, inp);
+        t += 1 / 60;
+        held = held || !!pl.ladder;
+        if (done(pl) || t > maxT) {
+          inp.keys.delete(key);
+          resolve({ ok: done(pl), held, t, y: pl.pos.y });
           return;
         }
       }
@@ -170,19 +193,19 @@ try {
   await b.eval(`__game.settings.camera = 'first'`);
   await b.eval(HELPERS);
   console.log('sections drawn:', await b.eval('__game.world.interiors.loaded.length'));
-  const P = await b.eval('JSON.stringify(__game.world.interiors.plan)').then(JSON.parse);
+  const P = await b.eval('JSON.stringify(__game.world.interiors.plans.k5i)').then(JSON.parse);
 
   // ------------------------------------------------------------ 1. reachability
   const flood = await b.eval(`(() => {
-    const I = __game.world.interiors, P = I.plan, out = [];
+    const I = __game.world.interiors, P = I.plans.k5i, out = [];
     __qa.openAll();
-    for (const sec of I.loaded) {
+    for (const sec of I.loaded.filter((s) => s.P === P)) {
       // from the street in front of the entrance: through the hall, up all the stairs, into every flat
       const r = __qa.flood(sec, 8.0, -1.2, 0.0);
       const rooms = {};
       for (const [x, y, h] of r) {
         const fl = Math.floor((h - P.PL + 0.15) / P.FH);
-        const room = I.roomAt(x, y);
+        const room = I.roomAt(P, x, y);
         if (room >= 0 && h > P.PL - 0.2) rooms[fl + ':' + room] = (rooms[fl + ':' + room] || 0) + 1;
         if (y > P.D + 0.2 && h > P.PL - 0.2) rooms[fl + ':balcony' + (x < 8 ? 'L' : 'B')] = (rooms[fl + ':balcony' + (x < 8 ? 'L' : 'B')] || 0) + 1;
       }
@@ -324,25 +347,26 @@ try {
   await shot('16-R-bedroom');
   await walk('out of R onto the landing', [[13.6, 7.0], [13.85, 6.0], [13.85, 5.0], [13.3, 4.8], [12.4, 4.75], [10.4, 4.7], [9.9, 4.8], [9.0, 4.8]]);
 
-  // the roof: open the hatch, climb out
+  // the roof: open the hatch, walk into the ladder, climb it with W held and pull yourself out
   const t = fz(P.FLOORS - 1);
   await b.eval(`__qa.put(${S}, 7.12, 4.92, ${t}, 7.12, 5.5, 0.9)`);
   await sleep(300);
   await press('roof hatch', 7.12, 14.4, 4.92);
   await sleep(700);
   await shot('17-hatch-open');
-  const climbed = await b.eval(`(() => { const pl = __game.player; pl.camYaw = Math.PI; return pl.startClimb(); })()`);
-  for (let i = 0; i < 40 && await b.eval('!!__game.player.climb'); i++) await sleep(100);
-  const roofY = await b.eval('__game.player.pos.y.toFixed(2)');
-  check(climbed && roofY > 14.5, `climbed through the hatch onto the roof (${roofY} m)`);
+  await b.eval(`__qa.put(${S}, 7.1, 4.3, ${t}, 7.1, 5.5)`);
+  const up = await b.eval(`__qa.hold(${S}, 'KeyW', 7.1, 5.6, 0.3, (pl) => !pl.ladder && !pl.scene && pl.onGround && pl.pos.y > 14.5).then(JSON.stringify)`).then(JSON.parse);
+  check(up.ok && up.held, `took hold of the ladder, climbed out onto the roof (${up.y.toFixed(2)} m in ${up.t.toFixed(1)} s)`);
   await b.eval(`__game.settings.camera = 'third'; __game.player.camPitch = 0.3`);
   await sleep(500);
   await shot('18-roof');
   // and back down: walk into the hatch
-  await walk('roof back into the hatch', [[7.12, 5.9, 14.6], [7.12, 4.92, 14.6]]);
-  await sleep(1200);
-  const down = await b.eval(`__qa.plan(${S}, __game.player.pos).y.toFixed(2)`);
-  check(Math.abs(down - t) < 0.2, `dropped back onto the top landing (${down} m)`);
+  await walk('roof back to the hatch', [[7.12, 6.3, 14.6]]);
+  const into = await b.eval(`__qa.hold(${S}, 'KeyW', 7.12, 4.92, -0.3, (pl) => !!pl.ladder, 6).then(JSON.stringify)`).then(JSON.parse);
+  check(into.ok, 'stepped into the hatch and onto the ladder');
+  const down = await b.eval(`__qa.hold(${S}, 'KeyS', 7.1, 5.6, 0.1, (pl) => !pl.ladder && pl.onGround).then(JSON.stringify)`).then(JSON.parse);
+  const downY = await b.eval(`__qa.plan(${S}, __game.player.pos).y.toFixed(2)`);
+  check(down.ok && Math.abs(downY - t) < 0.05, `climbed down onto the top landing (${downY} m in ${down.t.toFixed(1)} s)`);
   await b.eval(`__game.settings.camera = 'first'`);
 
   // a switch must change the room it belongs to: the living room of L, from inside it

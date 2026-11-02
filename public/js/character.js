@@ -123,7 +123,10 @@ export class Character {
     if (pl.gait === 'run') this.tired = Math.min(12, this.tired + dt);
     else if (!moving) this.tired = Math.max(0, this.tired - dt * 1.5);
     let want;
-    if (pl.flying) want = 'fly';
+    // no climbing clip: on the ladder the legs walk as fast as you climb, out of the hatch you crawl crouched
+    if (pl.ladder) want = 'walk';
+    else if (pl.scene) want = 'crouch_walk';
+    else if (pl.flying) want = 'fly';
     else if (this.airTime > 0.12 || (!pl.onGround && pl.vel.y > 0.5)) want = 'jump';
     else if (pl.crouch) want = moving ? 'crouch_walk' : 'crouch_idle';
     else if (moving) want = pl.speed > 3.2 ? 'run' : 'walk';
@@ -133,7 +136,11 @@ export class Character {
 
     const a = this.actions[this.state];
     const natural = this.meta[this.state]?.speed;
-    if (natural) {
+    if (pl.ladder) {
+      a.setEffectiveTimeScale(Math.min(1.2, Math.abs(pl.climbVel) * 1.1));
+    } else if (pl.scene) {
+      a.setEffectiveTimeScale(0.6);
+    } else if (natural) {
       a.setEffectiveTimeScale(THREE.MathUtils.clamp(pl.speed / natural, 0.5, 1.7));
     }
     this.mixer.update(dt);

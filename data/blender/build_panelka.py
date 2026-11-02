@@ -34,11 +34,13 @@ from mathutils.bvhtree import BVHTree
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import k5i          # noqa: E402  the khrushchyovka with interiors
-import k5i_plan     # noqa: E402
+import k5i          # noqa: E402  the buildings with interiors (both plans)
+import k5i_plan     # noqa: E402  the khrushchyovka
+import k9i_plan     # noqa: E402  the nine-storey with a lift
+import k9i          # noqa: E402  its furniture and the lift
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT_GLB = os.path.join(ROOT, 'public', 'models', 'panelka.glb')
-OUT_PLAN = os.path.join(ROOT, 'public', 'models', 'k5i_plan.json')
+OUT_PLAN = os.path.join(ROOT, 'public', 'models', 'plans.json')
 OUT_BLEND = os.path.join(HERE, 'panelka_assets.blend')
 TEX = os.path.join(ROOT, 'public', 'tex')
 
@@ -198,6 +200,41 @@ MAT_DEFS = {
     'pk_terracotta': ((0.60, 0.30, 0.18), None),
     'pk_plant':     ((0.15, 0.40, 0.15), None),
     'pk_door_int':  ((0.88, 0.88, 0.85), None),
+    # the newer styles of the flats (rooms.py)
+    'pk_gloss_black': ((0.05, 0.045, 0.05), None),
+    'pk_plush':     ((0.58, 0.45, 0.32), None),
+    'pk_fabric_grey': ((0.42, 0.43, 0.45), None),
+    'pk_cushion_a': ((0.72, 0.62, 0.42), None),
+    'pk_cushion_b': ((0.55, 0.60, 0.62), None),
+    'pk_bedding_eu': ((0.55, 0.12, 0.14), None),
+    'pk_white_matte': ((0.86, 0.86, 0.84), None),
+    'pk_wood_oak':  ((0.80, 0.68, 0.50), 'planks'),
+    'pk_steel':     ((0.66, 0.68, 0.70), None),
+    'pk_glass_black': ((0.03, 0.03, 0.035), None),
+    'pk_lace':      ((0.93, 0.92, 0.88), None),
+    'pk_iron':      ((0.16, 0.17, 0.18), None),
+    'pk_poster_a':  ((0.78, 0.40, 0.32), None),
+    'pk_poster_b':  ((0.30, 0.45, 0.60), None),
+    'pk_aquarium':  ((0.25, 0.60, 0.62), None),
+    'pk_glow_spot': ((1.00, 0.90, 0.72), None),
+    'pk_glow_panel': ((0.95, 0.96, 1.00), None),
+    'pk_newspaper': ((0.74, 0.72, 0.66), None),
+    'pk_jar':       ((0.55, 0.62, 0.42), None),
+    'pk_cardboard': ((0.60, 0.46, 0.30), None),
+    'pk_rug_eu':    ((0.55, 0.40, 0.30), None),
+    'pk_rug_mod':   ((0.70, 0.68, 0.64), None),
+    # the lift (k9i.py)
+    'pk_lift_frame': ((0.40, 0.36, 0.30), None),
+    'pk_lift_wall': ((0.55, 0.38, 0.24), 'planks'),
+    'pk_lift_floor': ((0.18, 0.17, 0.16), None),
+    'pk_lift_ceil': ((0.62, 0.62, 0.60), None),
+    'pk_lift_lamp': ((1.00, 0.92, 0.75), None),
+    'pk_lift_door': ((0.52, 0.48, 0.40), 'metal'),
+    'pk_lift_panel': ((0.20, 0.18, 0.16), None),
+    'pk_floornum': ((0.90, 0.90, 0.88), None),
+    'pk_lamp_off':  ((0.25, 0.06, 0.05), None),
+    'pk_glow_yellow': ((1.00, 0.80, 0.20), None),
+    'pk_chute':     ((0.48, 0.50, 0.46), 'metal'),
 }
 MATS = {}
 IMAGES = {}
@@ -647,7 +684,9 @@ SERIES = {
     'k5':  dict(M=3.2, fh=2.7, PL=0.8, D=11.4, front=['L', 'S', 'K', 'L'], back=['LB', 'L', 'L', 'LB']),
     # the one you can walk into (k5i_plan.py)
     'k5i': dict(M=k5i_plan.M, fh=k5i_plan.FH, PL=k5i_plan.PL, D=k5i_plan.D, front=k5i_plan.FRONT, back=k5i_plan.BACK),
+    'k9i': dict(M=k9i_plan.M, fh=k9i_plan.FH, PL=k9i_plan.PL, D=k9i_plan.D, front=k9i_plan.FRONT, back=k9i_plan.BACK),
 }
+INNER = {'k5i': k5i_plan, 'k9i': k9i_plan}
 
 
 def antenna(m, rnd, x, y, z):
@@ -678,9 +717,10 @@ def panel_building(name, series, sections, floors, seed, wall_mat, bal_style='sh
     rnd = random.Random(seed)
     M, fh, PL, D = S['M'], S['fh'], S['PL'], S['D']
     nm = len(S['front'])
-    inner = series == 'k5i'
-    # the khrushchyovka with interiors has thick end walls outside its sections
-    uoff = k5i_plan.END if inner else 0.0
+    P = INNER.get(series)
+    inner = P is not None
+    # the buildings with interiors have thick end walls outside their sections
+    uoff = P.END if inner else 0.0
     L = sections * nm * M + 2 * uoff
     top = PL + floors * fh
     m = Mesh(name)
@@ -702,7 +742,7 @@ def panel_building(name, series, sections, floors, seed, wall_mat, bal_style='sh
         holes, plinth_holes = [], []
         shop_mods = set(range(nm)) if (shop and side == 'front') else set()
         if inner:
-            doors += inner_facade(m, Fr, side, L, uoff, sections, floors, rnd, base_color, bal_style, glaze, holes, plinth_holes)
+            doors += inner_facade(m, Fr, side, L, uoff, sections, floors, rnd, base_color, bal_style, glaze, holes, plinth_holes, P)
             mods = []
         for j, kind in enumerate(mods):
             sec = j // nm
@@ -806,16 +846,17 @@ def panel_building(name, series, sections, floors, seed, wall_mat, bal_style='sh
         wall(m, Fr, D, PL, wall_top, holes, wall_mat)
         wall(m, Fr, D, 0, PL, [], 'pk_plinth')
     if inner:
+        k5i.use(P)
         for sec in range(sections):
-            k5i.structure_cols(m, -L / 2 + uoff + sec * k5i_plan.W, sec == 0, sec == sections - 1)
+            k5i.structure_cols(m, -L / 2 + uoff + sec * P.W, sec == 0, sec == sections - 1)
     else:
         m.col(-L / 2, -D / 2, 0, L / 2, D / 2, top)
 
     hatches = []
     if inner:
-        hx0, hy0, hx1, hy1 = k5i_plan.HATCH
+        hx0, hy0, hx1, hy1 = P.HATCH
         for sec in range(sections):
-            bx = -L / 2 + uoff + sec * k5i_plan.W
+            bx = -L / 2 + uoff + sec * P.W
             hatches.append((bx + hx0, -D / 2 + hy0, bx + hx1, -D / 2 + hy1))
     if roof == 'flat':
         t = 0.28
@@ -841,6 +882,19 @@ def panel_building(name, series, sections, floors, seed, wall_mat, bal_style='sh
         for sec in range(sections):
             sj = sec * nm + S['front'].index('S')
             xs = -L / 2 + uoff + sj * M + M / 2
+            if inner and P.ELEVATOR:
+                # the lift machine room over the shaft, the roof hatch in front of it
+                bx = -L / 2 + uoff + sec * P.W
+                x0, y0, x1, y1 = P.STAIR_X[0] - 0.14, P.ELEVATOR['wall'][1], P.STAIR_X[1] + 0.14, P.ELEVATOR['shaft'][3] + 0.3
+                m.box(bx + x0, y0 - D / 2, top, bx + x1, y1 - D / 2, top + 2.6, 'pk_conc', 'pk_snow', col=True)
+                m.box(bx + x0 + 0.6, y1 - D / 2, top + 0.05, bx + x0 + 1.5, y1 - D / 2 + 0.03, top + 2.0, 'pk_door')
+                m.pillow(bx + x0 + 0.1, y0 - D / 2 + 0.1, top + 2.6, bx + x1 - 0.1, y1 - D / 2 - 0.1, top + 2.8, 'pk_snow', 1, 0.5, sec)
+                for k in range(rnd.randint(1, 3)):
+                    antenna(m, rnd, xs + rnd.choice([-1, 1]) * rnd.uniform(3.0, 8), rnd.uniform(-D / 2 + 1.5, D / 2 - 1.5), top)
+                for k in range(2):
+                    vx, vy = xs + rnd.choice([-1, 1]) * rnd.uniform(3.0, 8), rnd.uniform(1, D / 2 - 1.5)
+                    m.box(vx - 0.35, vy - 0.35, top, vx + 0.35, vy + 0.35, top + 1.1, 'pk_conc', 'pk_snow', col=True)
+                continue
             if inner:
                 # only the hatch; antennas and vents stay clear of it
                 for k in range(rnd.randint(1, 3)):
@@ -907,7 +961,7 @@ def panel_building(name, series, sections, floors, seed, wall_mat, bal_style='sh
         m.extra['doors'] = json.dumps(doors)
     if inner:
         # the game puts the insides, furniture and doors of every section here (interiors.js)
-        m.extra['interior'] = json.dumps(dict(plan='k5i', sections=sections, x0=-L / 2 + uoff))
+        m.extra['interior'] = json.dumps(dict(plan=P.NAME, sections=sections, x0=-L / 2 + uoff))
     return m.finish()
 
 
@@ -924,11 +978,11 @@ def roof_face(m, x0, y0, x1, y1, z, holes):
             m.face([(a0, b0, z), (a1, b0, z), (a1, b1, z), (a0, b1, z)], 'pk_snow')
 
 
-def inner_facade(m, Fr, side, L, uoff, sections, floors, rnd, base_color, bal_style, glaze, holes, plinth_holes):
+def inner_facade(m, Fr, side, L, uoff, sections, floors, rnd, base_color, bal_style, glaze, holes, plinth_holes, P):
     """Facade of the khrushchyovka with interiors, from its plan. Every window says which room, section and floor
     it belongs to: cell = (10000 + room, section * 10 + floor, + 500 for a balcony door), so the game lights it
-    the same way as the room behind it."""
-    P = k5i_plan
+    the same way as the room behind it. The room is counted from the plan's BASE (the game keeps the rooms of all plans
+    in one list)."""
     doors = []
     def u_of(sec, x):
         g = uoff + sec * P.W + x
@@ -939,7 +993,7 @@ def inner_facade(m, Fr, side, L, uoff, sections, floors, rnd, base_color, bal_st
     mods = P.FRONT if side == 'front' else P.BACK
     for sec in range(sections):
         for j, kind in enumerate(mods):
-            if kind != 'S':
+            if kind not in ('S', 'X'):
                 ua, ub = span(sec, P.module_center(j) - 0.25, P.module_center(j) + 0.25)
                 plinth_holes.append((ua, ub, 0.25, 0.5))
                 opening(m, Fr, ua, ub, 0.25, 0.5, 0.25, 'pk_dark', sill=False, reveal='pk_plinth')
@@ -951,25 +1005,24 @@ def inner_facade(m, Fr, side, L, uoff, sections, floors, rnd, base_color, bal_st
                     continue
                 ua, ub = span(sec, x0, x1)
                 holes.append((ua, ub, zf + z0, zf + z1))
-                opening(m, Fr, ua, ub, zf + z0, zf + z1, 0.2, 'pk_win_i', (10000 + room, sec * 10 + f))
+                opening(m, Fr, ua, ub, zf + z0, zf + z1, 0.2, 'pk_win_i', (10000 + P.BASE + room, sec * 10 + f))
             if side == 'front' and f < floors - 1:
                 x0, x1, z0, z1 = P.STAIR_WINDOW
                 ua, ub = span(sec, x0, x1)
                 holes.append((ua, ub, zf + z0, zf + z1))
-                opening(m, Fr, ua, ub, zf + z0, zf + z1, 0.2, 'pk_win_i', (10000, sec * 10 + f))
-            if side == 'back':
-                for d in P.DOORS:
-                    if d['wall'] != 'back':
-                        continue
-                    ua, ub = span(sec, d['a0'], d['a1'])
-                    holes.append((ua, ub, zf + 0.06, zf + 2.25))
-                    opening(m, Fr, ua, ub, zf + 0.06, zf + 2.25, 0.2, 'pk_win_i', (10000 + d['room'], sec * 10 + f + 500), sill=False)
-                    j = int(d['a0'] // P.M)
-                    m0, m1 = span(sec, j * P.M + 0.08, (j + 1) * P.M - 0.08)
-                    glazed = rnd.random() < glaze
-                    style = (('wood' if rnd.random() < 0.55 else 'pvc') if glazed else bal_style)
-                    color = base_color if rnd.random() < 0.75 else rnd.choice(BAL_COLORS)
-                    balcony(m, Fr, m0, m1, zf, style, color, rnd, f == floors - 1, zf + P.FH - 0.16, hollow=True)
+                opening(m, Fr, ua, ub, zf + z0, zf + z1, 0.2, 'pk_win_i', (10000 + P.BASE, sec * 10 + f))
+            for d in P.DOORS:
+                if d['wall'] != side:
+                    continue
+                ua, ub = span(sec, d['a0'], d['a1'])
+                holes.append((ua, ub, zf + 0.06, zf + 2.25))
+                opening(m, Fr, ua, ub, zf + 0.06, zf + 2.25, 0.2, 'pk_win_i', (10000 + P.BASE + d['room'], sec * 10 + f + 500), sill=False)
+                j = int(d['a0'] // P.M)
+                m0, m1 = span(sec, j * P.M + 0.08, (j + 1) * P.M - 0.08)
+                glazed = rnd.random() < glaze
+                style = (('wood' if rnd.random() < 0.55 else 'pvc') if glazed else bal_style)
+                color = base_color if rnd.random() < 0.75 else rnd.choice(BAL_COLORS)
+                balcony(m, Fr, m0, m1, zf, style, color, rnd, f == floors - 1, zf + P.FH - 0.16, hollow=True)
         if side == 'front':
             # entrance: a doorway through the wall (the game hangs the door), transom, canopy, steps
             e0, e1, ez0, ez1 = P.ENTRANCE
@@ -979,7 +1032,7 @@ def inner_facade(m, Fr, side, L, uoff, sections, floors, rnd, base_color, bal_st
             holes.append((ua, ub, ez0, ez1 + 0.35))
             opening(m, Fr, ua, ub, ez0, ez1, P.T, None, sill=False)
             fquad(m, Fr, ua, ub, ez0, ez1, -0.12, 'pk_door_i')
-            opening(m, Fr, ua, ub, ez1, ez1 + 0.35, 0.2, 'pk_win_i', (10000, sec * 10), sill=False)
+            opening(m, Fr, ua, ub, ez1, ez1 + 0.35, 0.2, 'pk_win_i', (10000 + P.BASE, sec * 10), sill=False)
             fbox(m, Fr, uc + 0.6, uc + 0.72, -0.3, -0.25, 1.05, 1.2, 'pk_metal')
             fbox(m, Fr, uc - 1.6, uc + 1.6, 0, 1.7, 2.72, 2.88, 'pk_conc', 'pk_snow', 'pk_conc_ns', col=True)
             m.pillow(*Fr.p(uc - 1.5, 0.1, 2.88), *Fr.p(uc + 1.5, 1.6, 3.06), 'pk_snow', 2, 0.5, sec)
@@ -2047,14 +2100,21 @@ def build():
     panel_building('k5_4b', 'k5', 4, 5, 8, 'pk_brick5', 'lattice', 0.4, roof='pitched')
     panel_building('k5_3p', 'k5', 3, 5, 9, 'pk_panel5', 'lattice', 0.35)
     panel_building('k5_2b', 'k5', 2, 5, 10, 'pk_brick5', 'lattice', 0.45, roof='pitched')
+    k5i.init(Mesh)
     panel_building('k5i_4', 'k5i', 4, 5, 11, 'pk_panel5', 'lattice', 0.35)
     panel_building('k5i_3', 'k5i', 3, 5, 12, 'pk_panel5', 'sheet', 0.4)
-    k5i.init(Mesh)
+    k5i.use(k5i_plan)
     k5i.build_shell()
     k5i.build_furniture()
     k5i.build_doors()
+    panel_building('k9i_2', 'k9i', 2, 9, 13, 'pk_panel9', 'sheet', 0.5)
+    panel_building('k9i_3', 'k9i', 3, 9, 14, 'pk_tile9', 'conc', 0.45)
+    k5i.use(k9i_plan)
+    k5i.build_shell(k9i.shell_extra)
+    k9i.build_furniture()
+    k9i.build_lift()
     with open(OUT_PLAN, 'w') as f:
-        json.dump(k5i_plan.as_json(), f, separators=(',', ':'))
+        json.dump({'k5i': k5i_plan.as_json(), 'k9i': k9i_plan.as_json()}, f, separators=(',', ':'))
 
     garage_row('garages6', 6, 1)
     garage_row('garages4', 4, 2)

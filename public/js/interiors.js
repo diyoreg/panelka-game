@@ -1,23 +1,28 @@
-// Insides of the khrushchyovka (data/blender/k5i.py, plan in k5i_plan.py, shipped as models/k5i_plan.json).
+// Insides of the buildings you can walk into: the khrushchyovka (data/blender/k5i_plan.py) and the nine-storey with
+// a lift (k9i_plan.py), both built by data/blender/k5i.py and shipped with their plans in models/plans.json.
 // The walls, stairs and floors of every section always collide (they are colliders of the building), but only
 // the sections near the camera get their insides drawn: the shell, the furniture of every apartment in its
-// style, the doors. Their windows on the facade turn into real openings and the shaders light every room with
-// its own lamp (probeInterior in materials.js). Doors, the roof hatch and light switches react to E.
+// style, the doors, the lift. Their windows on the facade turn into real openings and the shaders light every
+// room with its own lamp (probeInterior in materials.js). Doors, the roof hatch, light switches and the buttons
+// of the lift react to E.
 
 import * as THREE from 'three';
-import { U, SEC_MAX, OV_MAX, ROOM_BOXES, ROOM_N, PORTAL_N, FLOORS_MAX } from './materials.js';
+import { U, SEC_MAX, OV_MAX, ROOM_BOXES, ROOM_N, PORTAL_N, PORTAL_PLAN, FLOORS_MAX, PLAN_N } from './materials.js';
+import { Lift, isLiftAsset } from './lift.js';
 
 const LOAD_R = 30;        // sections this close to the camera get their insides
 const REACH = 2.1;        // how far you can reach a door or a switch from your eyes
 const DOOR_SPEED = 2.4;   // share of the swing per second
 const HATCH_OPEN = 1.75;  // radians the roof hatch lifts
-const APTS = ['', 'L', 'R', 'B'];
+const LADDER_STAND = 0.36; // the player's middle this far in front of the rungs while on the ladder
+// how a flat was done up, with the share of flats (the same thresholds as aptStyle() in materials.js)
+export const STYLES = [['sov', 30], ['xp', 48], ['eu', 66], ['mod', 84], ['old', 100]];
 // light a closed door lets through (its glass) and how high its glass starts
 const DOOR_GLASS = { kit: [0.5, 0.12], room: [0.35, 0.98], bath: [0.12, 1.6], apt: [0, 0] };
 const FRAME = 0.03;
 const V3 = THREE.Vector3;
-// assets drawn by this module, not by the blocks: the shell, furniture (k5i_L_sov ...), door leaves, the hatch
-export const isInteriorAsset = (name) => /^k5i_(shell|hatch|dr_|[LRB]_)/.test(name);
+// assets drawn by this module, not by the blocks: shells, furniture (k5i_L_sov ...), door leaves, the hatch, the lift
+export const isInteriorAsset = (name) => /^k[59]i_(shell|hatch|dr_|[A-Z]_)/.test(name) || isLiftAsset(name);
 const isDoorAsset = (name) => name.startsWith('k5i_dr_') || name === 'k5i_hatch';
 
 // Integer hash, the same as hkey() in materials.js: whatever the facade shows, the rooms show too
@@ -34,57 +39,73 @@ export function hkey(bx, bz, sec, fl, salt) {
 const hfrac = (b, sec, fl, salt) => (hkey(b[0], b[1], sec, fl, salt) % 1000) / 1000;
 
 export class Interiors {
-  constructor(world, plan) {
+  constructor(world, plans) {
     this.world = world;
-    this.plan = plan;
+    // every plan, with its place in the shaders' lists
+    this.plans = {};
+    Object.values(plans).forEach((P, i) => { P.index = i; this.plans[P.name] = P; });
     this.loaded = [];
     this.loadedKey = '';
     this.doors = [];              // door objects of the loaded sections
     this.doorState = new Map();   // key -> open, remembered while you walk around
     this.overrides = new Map();   // switched lights: 'bx,bz,code' -> on, newest last
     this.switches = [];
+    this.doorCols = [];
     this.dynCols = [];
+    this.lifts = [];              // the lifts of the loaded sections
+    this.liftState = new Map();   // section key -> its Lift, kept while you walk around
     this.target = null;
-    this.onSound = null;          // (kind) => void
+    this.onSound = null;          // (kind, volume) => void
+    this.onHum = null;            // (level 0..1) => void: the lift motor
+    this.camPos = null;
     this.toPlanTmp = new V3();
     this.setupUniforms();
   }
 
+  // a room of plan P in the shaders' list of all rooms
+  gid(P, room) { return P.base + room; }
+
   setupUniforms() {
-    const P = this.plan;
-    U.uPlan.value.set(P.W, P.D, P.PL, P.FH);
-    U.uPlanTop.value.set(P.ROOF, P.VEST_Z);
-    let k = 0;
-    for (const r of P.rooms) {
-      for (const [x0, y0, x1, y1] of r.boxes) {
-        if (k >= ROOM_BOXES) break;
-        U.uRoomBox.value[k].set(x0, y0, x1, y1);
-        U.uRoomBoxId.value[k] = r.id;
-        k++;
+    let k = 0, pk = 0;
+    for (const P of Object.values(this.plans)) {
+      if (P.index >= PLAN_N) break;
+      const k0 = k, p0 = pk;
+      for (const r of P.rooms) {
+        const g = this.gid(P, r.id);
+        for (const [x0, y0, x1, y1] of r.boxes) {
+          if (k >= ROOM_BOXES) break;
+          U.uRoomBox.value[k].set(x0, y0, x1, y1);
+          U.uRoomBoxId.value[k] = g;
+          k++;
+        }
+        if (g < ROOM_N) {
+          U.uRoomLamp.value[g].set(...r.lamp);
+          U.uRoomInfo.value[g].set(r.apt, r.kind, 0, 0);
+        }
       }
-      if (r.id < ROOM_N) {
-        U.uRoomLamp.value[r.id].set(...r.lamp);
-        U.uRoomInfo.value[r.id].set(r.apt, r.kind, 0, 0);
-      }
+      P.boxes = P.rooms.flatMap((r) => r.boxes.map((b) => ({ id: r.id, b })));
+      // doorways between two rooms pass light (the balcony doors lead outside)
+      P.doors.forEach((d, i) => {
+        if (i >= PORTAL_PLAN || pk >= PORTAL_N) return;
+        const v = U.uPortal.value[pk], info = U.uPortalInfo.value[pk];
+        pk++;
+        const across = d.axis === 'X' ? d.hinge[0] : d.hinge[1];
+        // the middle of the wall: the hinge lies on the face the door opens toward
+        const c = across - (d.axis === 'X' ? d.opened[0] : d.opened[1]) * 0.04;
+        const mid = (d.span[0] + d.span[1]) / 2;
+        const side = (s) => (d.axis === 'X' ? this.roomAt(P, c + s * 0.3, mid) : this.roomAt(P, mid, c + s * 0.3));
+        const ra = side(-1), rb = side(1);
+        const glass = DOOR_GLASS[d.kind];
+        if (ra < 0 || rb < 0 || !glass) { v.set(0, 0, 0, 2); info.set(-1, -1, 0, 0); return; }
+        v.set(c, d.span[0] + FRAME, d.span[1] - FRAME, d.axis === 'X' ? 0 : 1);
+        info.set(this.gid(P, ra), this.gid(P, rb), glass[0], glass[1]);
+      });
+      const st = P.stair;
+      U.uPlanDim.value[P.index].set(P.W, P.D, P.PL, P.FH);
+      U.uPlanTop.value[P.index].set(P.ROOF, P.VEST_Z, P.FLOORS, P.xc);
+      U.uPlanStair.value[P.index].set(st.yFloor, st.yMid, (st.laneA[1] + st.laneB[0]) / 2, st.rise * 8);
+      U.uPlanRange.value[P.index].set(k0, k, p0, pk);
     }
-    this.boxes = P.rooms.flatMap((r) => r.boxes.map((b) => ({ id: r.id, b })));
-    // doorways between two rooms pass light (the balcony doors lead outside)
-    this.portals = [];
-    P.doors.forEach((d, i) => {
-      const v = U.uPortal.value[i], info = U.uPortalInfo.value[i];
-      if (i >= PORTAL_N) return;
-      const across = d.axis === 'X' ? d.hinge[0] : d.hinge[1];
-      // the middle of the wall: the hinge lies on the face the door opens toward
-      const c = across - (d.axis === 'X' ? d.opened[0] : d.opened[1]) * 0.04;
-      const mid = (d.span[0] + d.span[1]) / 2;
-      const side = (s) => (d.axis === 'X' ? this.roomAt(c + s * 0.3, mid) : this.roomAt(mid, c + s * 0.3));
-      const ra = side(-1), rb = side(1);
-      const glass = DOOR_GLASS[d.kind];
-      if (ra < 0 || rb < 0 || !glass) { v.set(0, 0, 0, 2); info.set(-1, -1, 0, 0); return; }
-      v.set(c, d.span[0] + FRAME, d.span[1] - FRAME, d.axis === 'X' ? 0 : 1);
-      info.set(ra, rb, glass[0], glass[1]);
-    });
-    for (let i = P.doors.length; i < PORTAL_N; i++) U.uPortal.value[i].set(0, 0, 0, -1);
   }
 
   // a new seed: the old blocks and their sections are gone
@@ -93,7 +114,10 @@ export class Interiors {
     this.loadedKey = '';
     this.doors = [];
     this.switches = [];
+    this.doorCols = [];
     this.dynCols = [];
+    this.lifts = [];
+    this.liftState.clear();
     this.doorState.clear();
     this.overrides.clear();
     U.uSecN.value = 0;
@@ -104,7 +128,8 @@ export class Interiors {
 
   // Called by the world when it places a building that has insides. Adds the furniture colliders to the block.
   addBuilding(B, m, it) {
-    const P = this.plan;
+    const P = this.plans[it.interior.plan];
+    if (!P) return null;
     const pos = new V3().setFromMatrixPosition(m);
     const bid = [Math.round(pos.x * 2), Math.round(pos.z * 2)];
     const { sections, x0 } = it.interior;
@@ -116,18 +141,18 @@ export class Interiors {
         .multiply(matrix.clone().invert());
       const box = [Infinity, Infinity, -Infinity, -Infinity];
       for (const [px, py] of [[-P.END, -0.5], [P.W + P.END, -0.5], [-P.END, P.D + 0.5], [P.W + P.END, P.D + 0.5]]) {
-        const w = this.planToWorld({ matrix }, px, 0, py);
+        const w = this.planToWorld({ matrix, P }, px, 0, py);
         box[0] = Math.min(box[0], w.x); box[1] = Math.min(box[1], w.z);
         box[2] = Math.max(box[2], w.x); box[3] = Math.max(box[3], w.z);
       }
-      const sec = { key: `${bid[0]},${bid[1]},${s}`, B, bid, index: s, matrix, toPlan, box,
+      const sec = { key: `${bid[0]},${bid[1]},${s}`, B, bid, index: s, matrix, toPlan, box, P,
         center: new V3((box[0] + box[2]) / 2, 0, (box[1] + box[3]) / 2) };
       B.sections.push(sec);
       out.push(sec);
       // furniture collides wherever it stands, drawn or not
       for (let fl = 0; fl < P.FLOORS; fl++) {
         const fm = this.floorMatrix(sec, fl);
-        for (let apt = 1; apt <= 3; apt++) {
+        for (const apt of this.apts(P)) {
           for (const c of this.world.assets.get(this.furnitureName(sec, fl, apt)).cols) B.cols.push(c.clone().applyMatrix4(fm));
         }
       }
@@ -135,20 +160,23 @@ export class Interiors {
     return out;
   }
 
+  apts(P) { return Object.keys(P.apts).map(Number); }
+
   floorMatrix(sec, fl) {
-    return sec.matrix.clone().multiply(new THREE.Matrix4().makeTranslation(0, this.plan.PL + fl * this.plan.FH, 0));
+    return sec.matrix.clone().multiply(new THREE.Matrix4().makeTranslation(0, sec.P.PL + fl * sec.P.FH, 0));
   }
 
   style(sec, fl, apt) {
-    return hkey(sec.bid[0], sec.bid[1], sec.index, fl, 50 + apt) % 100 < 58 ? 'sov' : 'xp';
+    const h = hkey(sec.bid[0], sec.bid[1], sec.index, fl, 50 + apt) % 100;
+    return STYLES.find(([, to]) => h < to)[0];
   }
 
   furnitureName(sec, fl, apt) {
-    return `k5i_${APTS[apt]}_${this.style(sec, fl, apt)}`;
+    return `${sec.P.name}_${sec.P.apts[apt]}_${this.style(sec, fl, apt)}`;
   }
 
   planToWorld(sec, x, h, y, out = new V3()) {
-    return out.set(x, h, this.plan.D / 2 - y).applyMatrix4(sec.matrix);
+    return out.set(x, h, sec.P.D / 2 - y).applyMatrix4(sec.matrix);
   }
 
   // A point in the plan of a section (x, height, plan y), or null
@@ -156,48 +184,74 @@ export class Interiors {
     return this.toPlanTmp.copy(p).applyMatrix4(sec.toPlan);
   }
 
-  roomAt(x, y) {
-    for (const { id, b } of this.boxes) if (x > b[0] && x < b[2] && y > b[1] && y < b[3]) return id;
+  roomAt(P, x, y) {
+    for (const { id, b } of P.boxes) if (x > b[0] && x < b[2] && y > b[1] && y < b[3]) return id;
     return -1;
   }
 
   // Inside one of the drawn sections: { sec, lp (x, height, plan y), room, fl }
   insideAt(p) {
-    const P = this.plan;
     for (const sec of this.loaded) {
+      const P = sec.P;
       const lp = this.toPlan(sec, p);
       if (lp.x >= 0 && lp.x <= P.W && lp.z > 0.17 && lp.z < P.D - 0.17 && lp.y > 0.05 && lp.y < P.ROOF - 0.17) {
         const fl = Math.max(0, Math.min(P.FLOORS - 1, Math.floor((lp.y - P.PL + 0.15) / P.FH)));
-        return { sec, lp: lp.clone(), room: this.roomAt(lp.x, lp.z), fl };
+        return { sec, lp: lp.clone(), room: this.roomAt(P, lp.x, lp.z), fl };
       }
     }
     return null;
+  }
+
+  // The steel ladder up to the roof hatch of every drawn section, for the player (player.js). stand: where your
+  // feet are on the top landing while you hold on to it, n: from there toward the rungs; the hatch in the same
+  // terms: along n from the stand point, and half its width across.
+  ladders() {
+    return this.loaded.map((sec) => sec.ladder || (sec.ladder = this.makeLadder(sec)));
+  }
+
+  makeLadder(sec) {
+    const P = sec.P, L = P.ladder;
+    const [hx0, hy0, hx1, hy1] = P.hatch.box;
+    const xc = (L.x0 + L.x1) / 2, ys = L.y - LADDER_STAND;
+    const stand = this.planToWorld(sec, xc, L.z0, ys);
+    const n = this.planToWorld(sec, xc, L.z0, L.y).sub(stand).normalize();
+    const key = `${sec.key}:hatch`;
+    return {
+      stand, n, y0: L.z0, ceil: L.ceil, roof: P.ROOF,
+      hatchAlong: [hy0 - ys, hy1 - ys], hatchHalf: (hx1 - hx0) / 2,
+      // you get through only once the lid is all the way up
+      open: () => { const d = this.doors.find((o) => o.key === key); return !!d && d.angle > 0.95; },
+    };
   }
 
   // footstep sound under you indoors: concrete on the stairs, the floor of the flat elsewhere
   surfaceAt(p) {
     const at = this.insideAt(p);
     if (!at) return null;
-    return at.room === 0 || at.room < 0 ? 'stair' : 'floor';
+    const kind = at.room >= 0 ? at.sec.P.rooms[at.room].kind : 0;
+    return kind === 0 ? 'stair' : 'floor';
   }
 
   // ---------------------------------------------------------------- lights
 
+  ovKey(sec, fl, room) {
+    return `${sec.bid[0]},${sec.bid[1]},${sec.index * 1000 + fl * 64 + this.gid(sec.P, room)}`;
+  }
+
   roomLit(sec, fl, room) {
-    const b = sec.bid;
-    const code = sec.index * 100 + fl * 16 + room;
-    const o = this.overrides.get(`${b[0]},${b[1]},${code}`);
+    const b = sec.bid, P = sec.P;
+    const o = this.overrides.get(this.ovKey(sec, fl, room));
     if (o !== undefined) return o;
-    if (room === 0) return hkey(b[0], b[1], sec.index, fl, 1) % 100 < 85;
-    const r = this.plan.rooms[room];
+    const r = P.rooms[room];
+    if (r.kind === 0) return hkey(b[0], b[1], sec.index, fl, 1) % 100 < 85;
+    if (r.kind === 5) return true;
     if (hkey(b[0], b[1], sec.index, fl, 10 + r.apt) % 100 >= 62) return false;
     const p = r.kind === 1 ? 70 : r.kind === 3 ? 45 : r.kind === 2 ? 22 : 58;
-    return hkey(b[0], b[1], sec.index, fl, 30 + room) % 100 < p;
+    return hkey(b[0], b[1], sec.index, fl, 30 + this.gid(P, room)) % 100 < p;
   }
 
   toggleLight(sec, fl, room) {
-    const b = sec.bid;
-    const key = `${b[0]},${b[1]},${sec.index * 100 + fl * 16 + room}`;
+    const key = this.ovKey(sec, fl, room);
     const on = !this.roomLit(sec, fl, room);
     this.overrides.delete(key);
     this.overrides.set(key, on);
@@ -219,7 +273,7 @@ export class Interiors {
 
   // ---------------------------------------------------------------- what is drawn
 
-  update(cam, dt, activeBlocks) {
+  update(cam, dt, activeBlocks, player = null) {
     const cand = [];
     for (const B of activeBlocks) {
       for (const sec of B.sections || []) {
@@ -237,39 +291,41 @@ export class Interiors {
       this.load(list);
     }
     this.animateDoors(dt);
+    this.updateLifts(dt, player, cam);
   }
 
   load(list) {
-    const P = this.plan;
     this.loaded = list;
     U.uSecN.value = list.length;
     list.forEach((sec, i) => {
       U.uSecInv.value[i].copy(sec.toPlan);
-      U.uSecData.value[i].set(sec.bid[0], sec.bid[1], sec.index, 0);
+      U.uSecData.value[i].set(sec.bid[0], sec.bid[1], sec.index, sec.P.index);
       U.uSecBox.value[i].set(sec.box[0] - 0.4, sec.box[1] - 0.4, sec.box[2] + 0.4, sec.box[3] + 0.4);
+      U.uLift.value[i].set(-100, 0, 0, 0);
     });
     const inst = new Map();
     const add = (name, m) => { if (!inst.has(name)) inst.set(name, []); inst.get(name).push(m); };
     for (const sec of list) {
-      add('k5i_shell', sec.matrix);
-      for (let fl = 0; fl < P.FLOORS; fl++) {
+      add(`${sec.P.name}_shell`, sec.matrix);
+      for (let fl = 0; fl < sec.P.FLOORS; fl++) {
         const fm = this.floorMatrix(sec, fl);
-        for (let apt = 1; apt <= 3; apt++) add(this.furnitureName(sec, fl, apt), fm);
+        for (const apt of this.apts(sec.P)) add(this.furnitureName(sec, fl, apt), fm);
       }
     }
     for (const [name, pool] of this.world.pools) {
-      if (isInteriorAsset(name) && !isDoorAsset(name) && !inst.has(name)) pool.forEach((m) => { m.count = 0; });
+      if (isInteriorAsset(name) && !isDoorAsset(name) && !isLiftAsset(name) && !inst.has(name)) pool.forEach((m) => { m.count = 0; });
     }
     for (const [name, ms] of inst) this.world.fillPool(name, ms);
     // doors and switches of these sections
     this.doors = [];
     this.switches = [];
     for (const sec of list) {
+      const P = sec.P;
       for (let fl = 0; fl < P.FLOORS; fl++) {
         P.doors.forEach((d, i) => {
           const door = this.makeDoor(sec, d, fl, i);
           door.si = list.indexOf(sec);
-          if (i < PORTAL_N) door.portal = i;
+          if (i < PORTAL_PLAN) door.portal = i;
           this.doors.push(door);
         });
         for (const s of P.switches) {
@@ -280,6 +336,19 @@ export class Interiors {
       this.doors.push(this.makeDoor(sec, P.entrance, -1, 'entr'));
       this.doors.push(this.makeHatch(sec));
     }
+    // the lifts: each keeps its state (where the cab is, who called it) while you are away
+    this.lifts = [];
+    for (const sec of list) {
+      if (!sec.P.elevator) continue;
+      let L = this.liftState.get(sec.key);
+      if (!L) {
+        L = new Lift(this, sec);
+        this.liftState.set(sec.key, L);
+      }
+      L.sec = sec;
+      L.si = list.indexOf(sec);
+      this.lifts.push(L);
+    }
     this.updateDoorCols();
     this.uploadOverrides();
   }
@@ -287,7 +356,7 @@ export class Interiors {
   // ---------------------------------------------------------------- doors
 
   makeDoor(sec, d, fl, i) {
-    const P = this.plan;
+    const P = sec.P;
     const key = `${sec.key}:${fl}:${i}`;
     if (!this.doorState.has(key)) this.doorState.set(key, d.open ? hfrac(sec.bid, sec.index, fl, 200 + (typeof i === 'number' ? i : 99)) < d.open : false);
     const open = this.doorState.get(key);
@@ -304,7 +373,7 @@ export class Interiors {
   }
 
   makeHatch(sec) {
-    const P = this.plan;
+    const P = sec.P;
     const key = `${sec.key}:hatch`;
     if (!this.doorState.has(key)) this.doorState.set(key, false);
     const open = this.doorState.get(key);
@@ -342,7 +411,7 @@ export class Interiors {
   }
 
   doorMatrix(d) {
-    const P = this.plan;
+    const P = d.sec.P;
     const m = new THREE.Matrix4();
     if (d.hatch) {
       m.makeRotationX(d.angle * HATCH_OPEN).setPosition(d.x0, d.z, P.D / 2 - d.y0);
@@ -384,12 +453,33 @@ export class Interiors {
   }
 
   updateDoorCols() {
-    this.dynCols = this.doors.map((d) => (d.open ? d.colOpen : d.colClosed));
+    this.doorCols = this.doors.map((d) => (d.open ? d.colOpen : d.colClosed));
+    this.dynCols = this.doorCols.concat(...this.lifts.map((L) => L.cols));
+  }
+
+  // ---------------------------------------------------------------- lifts
+
+  updateLifts(dt, player, cam) {
+    this.camPos = cam;
+    const mats = new Map();
+    const add = (name, m) => { if (!mats.has(name)) mats.set(name, []); mats.get(name).push(m); };
+    for (const L of this.lifts) {
+      L.update(dt, player, cam);
+      U.uLift.value[L.si].set(L.z, L.door, 0, 0);
+      L.draw(add);
+    }
+    for (const [name, pool] of this.world.pools) {
+      if (isLiftAsset(name) && !mats.has(name)) pool.forEach((m) => { m.count = 0; });
+    }
+    for (const [name, ms] of mats) if (this.world.assets.items.has(name)) this.world.fillPool(name, ms);
+    this.dynCols = this.doorCols.concat(...this.lifts.map((L) => L.cols));
+    // the motor and the ropes of the nearest moving cab
+    this.onHum?.(this.lifts.reduce((m, L) => Math.max(m, L.hum(cam)), 0));
   }
 
   // ---------------------------------------------------------------- E
 
-  // The door or switch you look at, within reach and not behind a wall
+  // The door, switch or button you look at, within reach and not behind a wall
   pick(camPos, camDir, eye) {
     let best = null, bestScore = Infinity;
     const v = new V3();
@@ -408,6 +498,7 @@ export class Interiors {
     };
     for (const d of this.doors) consider(this.doorCenter(d), d.hatch ? 0.45 : 0.32, { door: d });
     for (const s of this.switches) consider(s.p, 0.06, { sw: s });
+    for (const L of this.lifts) for (const b of L.buttons()) consider(b.p, b.size, { lift: L, btn: b });
     this.target = best;
     return best;
   }
@@ -430,14 +521,16 @@ export class Interiors {
 
   label(t) {
     if (!t) return '';
+    if (t.lift) return t.lift.label(t.btn);
     if (t.sw) return this.roomLit(t.sw.sec, t.sw.fl, t.sw.room) ? 'LIGHT OFF' : 'LIGHT ON';
     if (t.door.hatch) return t.door.open ? 'CLOSE HATCH' : 'OPEN HATCH';
     return t.door.open ? 'CLOSE' : 'OPEN';
   }
 
-  // E: flip the switch or swing the door. A door does not close on you.
+  // E: flip the switch, press the button or swing the door. A door does not close on you.
   use(t, player) {
     if (!t) return false;
+    if (t.lift) return t.lift.press(t.btn);
     if (t.sw) {
       this.toggleLight(t.sw.sec, t.sw.fl, t.sw.room);
       this.onSound?.('switch');
@@ -463,11 +556,12 @@ export class Interiors {
 
   // ---------------------------------------------------------------- title view
 
-  // From a window of a living room on the fourth floor, looking across the yard
+  // From a window of a room of one of the sections, looking across the yard
   view(sections, lookY) {
     const sec = sections[Math.floor(sections.length / 2)];
-    const P = this.plan;
-    const zf = P.PL + 3 * P.FH;
-    return { pos: this.planToWorld(sec, 14.4, zf + 1.5, 0.95), look: this.planToWorld(sec, 14.4, lookY, -40) };
+    const P = sec.P;
+    const [x, y, fl] = P.view;
+    const zf = P.PL + fl * P.FH;
+    return { pos: this.planToWorld(sec, x, zf + 1.5, y), look: this.planToWorld(sec, x, lookY, -40) };
   }
 }

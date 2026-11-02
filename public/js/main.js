@@ -1,8 +1,8 @@
 // Entry point: loading, main loop, game modes (splash, title, play, pause), autosave.
 
 import * as THREE from 'three';
-import { U, makeSky, setSignAtlas } from './materials.js';
-import { makeSignAtlas } from './textures.js';
+import { U, makeSky, setSignAtlas, setRuntimeTexture } from './materials.js';
+import { makeSignAtlas, makeLiftPanel, makeFloorNumbers } from './textures.js';
 import { Assets } from './assets.js';
 import { PanelkaWorld } from './panelka.js';
 import { Snow } from './snow.js';
@@ -95,15 +95,21 @@ async function boot() {
   resize();
   try { await document.fonts.load('16px PressStart'); } catch { /* fallback font */ }
   setSignAtlas(makeSignAtlas());
+  setRuntimeTexture('liftPanel', makeLiftPanel());
+  setRuntimeTexture('floorNum', makeFloorNumbers());
   U.uSeedOff.value = (hashString(seedText) % 1000) * 0.137;
   const assets = new Assets();
   const [plan] = await Promise.all([
-    fetch('models/k5i_plan.json').then((r) => r.json()).catch(() => null),
+    fetch('models/plans.json').then((r) => r.json()).catch(() => null),
     assets.load('models/panelka.glb'),
   ]);
   world = new PanelkaWorld(scene, assets, hashString(seedText), plan);
-  if (world.interiors) world.interiors.onSound = (kind) => audio.sfx(kind);
+  if (world.interiors) {
+    world.interiors.onSound = (kind, vol) => audio.sfx(kind, vol);
+    world.interiors.onHum = (level) => audio.liftHum(level);
+  }
   player = new Player(world, settings);
+  player.ladders = () => world.interiors?.ladders() ?? [];
   rig = await new Character().load('models/player.glb');
   scene.add(rig.root, rig.shadow);
   rig.onStep = (state) => {
@@ -248,7 +254,7 @@ function renderTitle() {
       <div class="map-shot" style="background-image:url(img/preview.jpg)">
         <div class="play">${w ? 'CONTINUE' : 'START'}</div>
       </div>
-      <div class="map-about">Soviet panel blocks on a winter night: lit kitchens, balconies to climb, snowed-in cars and yards.</div>
+      <div class="map-about">Soviet panel blocks on a winter night: lit kitchens, open stairwells, snowed-in cars and yards.</div>
       <div class="map-walk">${walkText}</div>
       <div class="weather"><span class="wlabel">SNOW</span><div class="choice">${chips}</div></div>
     </div>`;
@@ -544,7 +550,7 @@ function frame(now) {
     aimFlash();
     world.updateLights(camera.position);
     if (world.interiors) {
-      world.interiors.update(camera.position, dt, world.activeBlocks);
+      world.interiors.update(camera.position, dt, world.activeBlocks, player);
       indoor = !!world.interiors.insideAt(camera.position);
       player.indoor = !!world.interiors.insideAt(_up.copy(player.pos).setY(player.pos.y + 1.0));
     }

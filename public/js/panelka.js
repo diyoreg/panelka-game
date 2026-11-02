@@ -30,9 +30,9 @@ const LIGHTS = {
   win: { col: [1.0, 0.72, 0.42], k: 1.1, cone: 0 },
 };
 
-// k5i_*: the panel five-storeys you can walk into (interiors.js)
-const NORTH = ['p9_4', 'p9_3a', 'p9_3b', 'p12_2', 'p9_3a', 'k5_4b', 'p9_4', 'k5i_4'];
-const SOUTH = ['p9_2s', 'p9_3b', 'k5i_3', 'p9_3a', 'k5_4b', 'p12_2', 'k5i_4'];
+// k5i_*: the panel five-storeys you can walk into, k9i_*: the nine-storeys with a lift (interiors.js)
+const NORTH = ['p9_4', 'k9i_2', 'p9_3b', 'p12_2', 'k9i_3', 'k5_4b', 'p9_4', 'k5i_4', 'k9i_2'];
+const SOUTH = ['p9_2s', 'k9i_2', 'k5i_3', 'p9_3a', 'k5_4b', 'p12_2', 'k5i_4', 'k9i_3'];
 const SIDE = ['t16_a', 't16_b', 'p12_2', 'k5_2b', 't16_a', 'p9_2s'];
 const FIVE = ['k5i_4', 'k5i_3', 'k5_4b', 'k5i_4', 'k5_2b', 'k5i_3', 'p9_3a'];
 // light (_a) and heavy (_b) snow; the paint is picked per car from the model's factory colors (materials.js)
@@ -340,7 +340,7 @@ export class PanelkaWorld {
     }
     let S = null;
     if (lep) this.pylons(B, r);
-    else S = this.edgeBuilding(B, r, towers ? ['p12_2', 't16_b', 'p9_3a'] : SOUTH, 'S', r.range(-14, 14));
+    else S = this.edgeBuilding(B, r, towers ? ['p12_2', 't16_b', 'k9i_2'] : SOUTH, 'S', r.range(-14, 14));
     const E = r.chance(0.75) ? this.edgeBuilding(B, r, SIDE, 'E', r.range(-8, 8)) : null;
     const Wb = r.chance(0.75) ? this.edgeBuilding(B, r, SIDE, 'W', r.range(-8, 8)) : null;
 

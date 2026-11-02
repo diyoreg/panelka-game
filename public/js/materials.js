@@ -7,13 +7,16 @@
 import * as THREE from 'three';
 
 export const PK_LIGHTS = 24;
-// insides of the khrushchyovka (interiors.js): sections drawn with their rooms, switched lights, rooms of the plan
+// insides of the buildings with interiors (interiors.js): sections drawn with their rooms, switched lights, the
+// rooms of every plan in one list (each plan has its range of it)
 export const SEC_MAX = 6;
 export const OV_MAX = 32;
-export const ROOM_BOXES = 24;
-export const ROOM_N = 16;
-export const PORTAL_N = 20;     // doorways of one floor that pass light from room to room
-export const FLOORS_MAX = 5;
+export const PLAN_N = 2;
+export const ROOM_BOXES = 48;
+export const ROOM_N = 40;
+export const PORTAL_N = 48;     // doorways that pass light from room to room, all plans
+export const PORTAL_PLAN = 24;  // of one plan: a bit each in a float
+export const FLOORS_MAX = 9;
 
 // Shared uniforms: the same objects in every material
 export const U = {
@@ -44,8 +47,11 @@ export const U = {
   uRoomBoxId: { value: new Array(ROOM_BOXES).fill(-1) },
   uRoomLamp: { value: Array.from({ length: ROOM_N }, () => new THREE.Vector4(0, 0, 2, 4)) },
   uRoomInfo: { value: Array.from({ length: ROOM_N }, () => new THREE.Vector4()) },
-  uPlan: { value: new THREE.Vector4(16, 11.4, 1.1, 2.7) },
-  uPlanTop: { value: new THREE.Vector2(14.6, 0.3) },
+  uPlanDim: { value: Array.from({ length: PLAN_N }, () => new THREE.Vector4(16, 11.4, 1.1, 2.7)) },
+  uPlanTop: { value: Array.from({ length: PLAN_N }, () => new THREE.Vector4(14.6, 0.3, 5, 8)) },
+  uPlanStair: { value: Array.from({ length: PLAN_N }, () => new THREE.Vector4(3.81, 1.85, 8, 1.35)) },
+  uPlanRange: { value: Array.from({ length: PLAN_N }, () => new THREE.Vector4()) },
+  uLift: { value: Array.from({ length: SEC_MAX }, () => new THREE.Vector4(-100, 0, 0, 0)) },
   uFlash: { value: new THREE.Vector4(0, 0, 0, 0) },      // flashlight: position, on
   uFlashDir: { value: new THREE.Vector4(0, 0, -1, 0.9) }, // its direction, cosine of the edge of the beam
   tFlashDepth: { value: null },                            // depth seen from the flashlight (flash.js)
@@ -218,21 +224,26 @@ vec3 flashAir(vec3 p) {
   return FLASH_COL * b * flashShadow(p, 0.05, false);
 }
 
-// ---- inside the khrushchyovka. Sections near the camera have their rooms drawn (interiors.js). A point inside
-// one of them is lit only by the lamp of its own room, so light never leaks through walls and floors.
-// Whether a room is lit comes from an integer hash of building, section, floor and room, the same one
-// interiors.js computes, plus the switches people flipped (uOv). The facade windows use it too.
+// ---- inside the buildings with interiors. Sections near the camera have their rooms drawn (interiors.js). A point
+// inside one of them is lit only by the lamp of its own room, so light never leaks through walls and floors.
+// Every section follows one of the plans (the khrushchyovka, the nine-storey); the rooms of all plans sit in one
+// list, a plan has its range of room boxes and doorways in it. Whether a room is lit comes from an integer hash of
+// building, section, floor and room, the same one interiors.js computes, plus the switches people flipped (uOv).
+// The facade windows use it too.
 uniform float uSecN;
 uniform mat4 uSecInv[${SEC_MAX}];   // world -> plan of the section: x along it, y up, z from the entrance facade
-uniform vec4 uSecData[${SEC_MAX}];  // building id x, z, section index
+uniform vec4 uSecData[${SEC_MAX}];  // building id x, z, section index, plan
 uniform vec4 uSecBox[${SEC_MAX}];   // its world xz bounds
-uniform vec4 uOv[${OV_MAX}];        // switched lights: building id x, z, section * 100 + floor * 16 + room, on (w < 0 ends)
+uniform vec4 uLift[${SEC_MAX}];     // its lift: height of the cab floor, doors open (0..1)
+uniform vec4 uOv[${OV_MAX}];        // switched lights: building id x, z, section * 1000 + floor * 64 + room, on (w < 0 ends)
 uniform vec4 uRoomBox[${ROOM_BOXES}];
 uniform float uRoomBoxId[${ROOM_BOXES}];
 uniform vec4 uRoomLamp[${ROOM_N}];   // x, plan y, height above the floor, range
-uniform vec4 uRoomInfo[${ROOM_N}];   // apartment, kind (0 stairwell, 1 kitchen, 2 bath, 3 hall, 4 room)
-uniform vec4 uPlan;                 // section width, depth, first floor level, floor height
-uniform vec2 uPlanTop;              // roof level, entrance hall floor
+uniform vec4 uRoomInfo[${ROOM_N}];   // apartment, kind (0 stairwell, 1 kitchen, 2 bath, 3 hall, 4 room, 5 lift cab)
+uniform vec4 uPlanDim[${PLAN_N}];    // section width, depth, first floor level, floor height
+uniform vec4 uPlanTop[${PLAN_N}];    // roof level, entrance hall floor, floors, middle of the stairwell (x)
+uniform vec4 uPlanStair[${PLAN_N}];  // floor landing edge, half landing edge (plan y), between the flights (x), half landing height
+uniform vec4 uPlanRange[${PLAN_N}];  // its room boxes from, to; its doorways from, to
 uniform vec4 uPortal[${PORTAL_N}];     // doorway: wall plane, opening from, to (along the wall), axis (0 plan x, 1 plan y; < 0 ends)
 uniform vec4 uPortalInfo[${PORTAL_N}]; // rooms on both sides, light let through when closed, bottom of its glass
 uniform float uDoorBits[${SEC_MAX * FLOORS_MAX}];  // open doors of each drawn section and floor, a bit per doorway
@@ -247,8 +258,11 @@ uint hkey(ivec2 b, int sec, int fl, int salt) {
 }
 float hfrac(ivec2 b, int sec, int fl, int salt) { return float(hkey(b, sec, fl, salt) % 1000u) / 1000.0; }
 
-int roomAt(vec2 q) {
+int roomAt(int p, vec2 q) {
+  vec4 rg = uPlanRange[p];
   for (int i = 0; i < ${ROOM_BOXES}; i++) {
+    if (float(i) < rg.x) continue;
+    if (float(i) >= rg.y) break;
     vec4 r = uRoomBox[i];
     if (q.x > r.x && q.x < r.z && q.y > r.y && q.y < r.w) return int(uRoomBoxId[i]);
   }
@@ -256,41 +270,55 @@ int roomAt(vec2 q) {
 }
 
 bool roomLit(ivec2 b, int sec, int fl, int room) {
-  float code = float(sec * 100 + fl * 16 + room);
+  float code = float(sec * 1000 + fl * 64 + room);
   for (int i = 0; i < ${OV_MAX}; i++) {
     vec4 o = uOv[i];
     if (o.w < -0.5) break;
     if (o.x == float(b.x) && o.y == float(b.y) && o.z == code) return o.w > 0.5;
   }
-  if (room == 0) return hkey(b, sec, fl, 1) % 100u < 85u;
   int apt = int(uRoomInfo[room].x);
   int kind = int(uRoomInfo[room].y);
+  if (kind == 0) return hkey(b, sec, fl, 1) % 100u < 85u;
+  if (kind == 5) return true;
   if (hkey(b, sec, fl, 10 + apt) % 100u >= 62u) return false;
   uint p = kind == 1 ? 70u : kind == 3 ? 45u : kind == 2 ? 22u : 58u;
   return hkey(b, sec, fl, 30 + room) % 100u < p;
 }
-// 0: Soviet furniture and finishes, 1: the 2000s
-float aptStyle(ivec2 b, int sec, int fl, int apt) { return hkey(b, sec, fl, 50 + apt) % 100u < 58u ? 0.0 : 1.0; }
+// how the flat was done up: 0 Soviet, 1 the 2000s, 2 the evroremont of the 90s, 3 the 2010s, 4 the old lady's flat
+// that nobody has touched since (the same thresholds as STYLES in interiors.js)
+float aptStyle(ivec2 b, int sec, int fl, int apt) {
+  uint h = hkey(b, sec, fl, 50 + apt) % 100u;
+  return h < 30u ? 0.0 : h < 48u ? 1.0 : h < 66u ? 2.0 : h < 84u ? 3.0 : 4.0;
+}
 vec3 lampColor(ivec2 b, int sec, int fl, int apt, int kind, float style) {
   float h = hfrac(b, sec, fl, 40 + apt * 4 + kind);
   if (kind == 0) return vec3(1.0, 0.86, 0.64);
-  if (kind == 1 && h < 0.35) return vec3(0.86, 0.95, 1.0);
+  if (kind == 5) return vec3(1.0, 0.9, 0.7) * 0.95;
+  // a strip light in the kitchen
+  if (kind == 1 && h < 0.35 && style < 3.5) return vec3(0.86, 0.95, 1.0);
+  if (style > 3.5) return vec3(0.95, 0.7, 0.42) * (0.66 + 0.1 * h);           // a 40 W bulb in a dusty shade
+  if (style > 2.5) return h < 0.5 ? vec3(0.98, 0.96, 0.9) : vec3(0.92, 0.95, 1.0);  // LED panels
+  if (style > 1.5) return vec3(1.0, 0.86, 0.66) * 1.05;                       // halogen spots
   if (style > 0.5) return h < 0.5 ? vec3(1.0, 0.9, 0.76) : vec3(0.96, 0.94, 0.88);
   return vec3(1.0, 0.82, 0.6) * (0.92 + 0.16 * h);
 }
 
-// Loaded section at a world point and the plan coordinates there, or -1.
+// Loaded section at a world point and the plan coordinates there, or -1; its plan in p.
 // inner: only the inside, between the inner faces of the facades and under the roof.
-int sectionAt(vec3 wp, bool inner, out vec3 lp) {
+int sectionAt(vec3 wp, bool inner, out vec3 lp, out int p) {
   lp = vec3(0.0);
+  p = 0;
   for (int i = 0; i < ${SEC_MAX}; i++) {
     if (float(i) >= uSecN) break;
     vec4 bx = uSecBox[i];
     if (wp.x < bx.x || wp.x > bx.z || wp.z < bx.y || wp.z > bx.w) continue;
     lp = (uSecInv[i] * vec4(wp, 1.0)).xyz;
+    p = int(uSecData[i].w + 0.5);
+    vec4 dm = uPlanDim[p];
+    float roof = uPlanTop[p].x;
     if (inner) {
-      if (lp.x >= 0.0 && lp.x <= uPlan.x && lp.z > 0.17 && lp.z < uPlan.y - 0.17 && lp.y > 0.05 && lp.y < uPlanTop.x - 0.17) return i;
-    } else if (lp.x >= -0.3 && lp.x <= uPlan.x + 0.3 && lp.z > -0.3 && lp.z < uPlan.y + 0.3 && lp.y > -0.5 && lp.y < uPlanTop.x + 0.6) {
+      if (lp.x >= 0.0 && lp.x <= dm.x && lp.z > 0.17 && lp.z < dm.y - 0.17 && lp.y > 0.05 && lp.y < roof - 0.17) return i;
+    } else if (lp.x >= -0.3 && lp.x <= dm.x + 0.3 && lp.z > -0.3 && lp.z < dm.y + 0.3 && lp.y > -0.5 && lp.y < roof + 0.6) {
       return i;
     }
   }
@@ -298,20 +326,24 @@ int sectionAt(vec3 wp, bool inner, out vec3 lp) {
 }
 bool insideLoaded(vec3 wp) {
   vec3 lp;
-  return uSecN > 0.5 && sectionAt(wp, true, lp) >= 0;
+  int p;
+  return uSecN > 0.5 && sectionAt(wp, true, lp, p) >= 0;
 }
 bool sectionLoaded(vec3 wp) {
   vec3 lp;
-  return uSecN > 0.5 && sectionAt(wp, false, lp) >= 0;
+  int p;
+  return uSecN > 0.5 && sectionAt(wp, false, lp, p) >= 0;
 }
 
 // filled by probeInterior() at the start of a fragment shader
 float gIn = 0.0;
+int gPlan = 0;
 int gRoom = -1;
 int gKind = -1;
 int gApt = 0;
 int gFl = 0;
 int gSec = 0;
+int gSi = 0;
 ivec2 gB = ivec2(0);
 float gLit = 0.0;
 float gStyle = 0.0;
@@ -320,28 +352,37 @@ vec3 gLN = vec3(0.0, 1.0, 0.0);
 vec3 gLampCol = vec3(1.0);
 vec3 gInLight = vec3(0.0);
 
+float floorLevel(int fl) { return uPlanDim[gPlan].z + float(fl) * uPlanDim[gPlan].w; }
+// the bulb over the entrance hall, under the first half landing
+vec3 entranceBulb() {
+  return vec3(uPlanTop[gPlan].w, uPlanDim[gPlan].z + uPlanStair[gPlan].w - 0.38, 1.2);
+}
+
 // Light of the neighbouring rooms coming in through the doorways of this room. An open doorway lets the lamp
 // behind it throw a sharp wedge of light across the floor and the walls (the ray from that lamp must pass
 // through the opening) and glows itself, softly, like a window; a closed door with glass only glows through
 // its glass, a solid one keeps the light in.
 vec3 portalLight(int si, int room, vec3 lp, vec3 ln) {
   vec3 sum = vec3(0.0);
-  float zf = uPlan.z + float(gFl) * uPlan.w;
+  float zf = floorLevel(gFl);
   uint bits = uint(uDoorBits[si * ${FLOORS_MAX} + gFl]);
+  vec4 rg = uPlanRange[gPlan];
   for (int k = 0; k < ${PORTAL_N}; k++) {
+    if (float(k) < rg.z) continue;
+    if (float(k) >= rg.w) break;
     vec4 pg = uPortal[k];
-    if (pg.w < -0.5) break;
     vec4 pi = uPortalInfo[k];
     int other = int(pi.x) == room ? int(pi.y) : int(pi.y) == room ? int(pi.x) : -1;
     if (other < 0) continue;
-    bool open = ((bits >> uint(k)) & 1u) == 1u;
+    bool open = ((bits >> uint(k - int(rg.z))) & 1u) == 1u;
     float tr = open ? 1.0 : pi.z;
     if (tr <= 0.0 || !roomLit(gB, gSec, gFl, other)) continue;
     int oapt = int(uRoomInfo[other].x);
-    vec3 ocol = lampColor(gB, gSec, gFl, oapt, int(uRoomInfo[other].y), oapt > 0 ? aptStyle(gB, gSec, gFl, oapt) : 0.0);
+    int okind = int(uRoomInfo[other].y);
+    vec3 ocol = lampColor(gB, gSec, gFl, oapt, okind, oapt > 0 ? aptStyle(gB, gSec, gFl, oapt) : 0.0);
     vec4 OL = uRoomLamp[other];
     vec3 olp = vec3(OL.x, zf + OL.z, OL.y);
-    if (other == 0 && gFl == 0) olp = vec3(8.0, uPlan.z + 1.35 - 0.38, 1.2);
+    if (okind == 0 && gFl == 0) olp = entranceBulb();
     // (across the wall, along it) of this point and of the lamp
     bool ay = pg.w > 0.5;
     vec2 p2 = ay ? lp.zx : lp.xz;
@@ -382,19 +423,23 @@ vec3 portalLight(int si, int room, vec3 lp, vec3 ln) {
 void probeInterior(vec3 wp, vec3 n) {
   if (uSecN < 0.5) return;
   vec3 lp;
-  int i = sectionAt(wp, true, lp);
+  int p;
+  int i = sectionAt(wp, true, lp, p);
   if (i < 0) return;
   gIn = 1.0;
+  gPlan = p;
+  gSi = i;
   vec3 ln = normalize(mat3(uSecInv[i]) * n);
   gLP = lp;
   gLN = ln;
   gB = ivec2(uSecData[i].xy);
   gSec = int(uSecData[i].z);
-  gFl = int(clamp(floor((lp.y - uPlan.z + 0.15) / uPlan.w), 0.0, 4.0));
+  vec4 dm = uPlanDim[p];
+  gFl = int(clamp(floor((lp.y - dm.z + 0.15) / dm.w), 0.0, uPlanTop[p].z - 1.0));
   // the room in front of the surface: a wall face belongs to the room it looks into
-  int room = roomAt(lp.xz + ln.xz * 0.25);
-  if (room < 0) room = roomAt(lp.xz + ln.xz * 0.6);
-  if (room < 0) room = roomAt(lp.xz);
+  int room = roomAt(p, lp.xz + ln.xz * 0.25);
+  if (room < 0) room = roomAt(p, lp.xz + ln.xz * 0.6);
+  if (room < 0) room = roomAt(p, lp.xz);
   gRoom = room;
   // the street glow through the windows: enough to find your way in a dark flat
   vec3 amb = vec3(0.085, 0.085, 0.1);
@@ -406,9 +451,14 @@ void probeInterior(vec3 wp, vec3 n) {
   gLit = on ? 1.0 : 0.0;
   gLampCol = lampColor(gB, gSec, gFl, gApt, gKind, gStyle);
   vec4 L = uRoomLamp[room];
-  vec3 lpos = vec3(L.x, uPlan.z + float(gFl) * uPlan.w + L.z, L.y);
-  // the entrance hall has its own bulb under the first half landing
-  if (room == 0 && lp.y < uPlan.z + 0.9 && lp.z < 2.75) lpos = vec3(8.0, uPlan.z + 1.35 - 0.38, 1.2);
+  vec3 lpos = vec3(L.x, floorLevel(gFl) + L.z, L.y);
+  if (gKind == 0 && lp.y < dm.z - 0.1 && lp.z < uPlanStair[p].x - 1.0) lpos = entranceBulb();
+  if (gKind == 5) {
+    // the lift cab: its lamp rides with it; the shaft above and below the cab is dark
+    float cz = uLift[i].x;
+    lpos = vec3(L.x, cz + L.z, L.y);
+    if (lp.y < cz - 0.25 || lp.y > cz + 2.4) { gInLight = amb * 0.25; return; }
+  }
   vec3 d = lpos - lp;
   float d2 = dot(d, d);
   float dist = sqrt(d2);
@@ -450,18 +500,24 @@ void main() {
   #ifdef USE_INSTANCING
   m = m * instanceMatrix;
   #endif
-  vec4 wp = m * vec4(position, 1.0);
-  vOrigin = (m * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+  // Position relative to the camera, without ever adding a world offset of kilometers to a vertex and
+  // taking it away again in the view matrix: in float32 that rounds every vertex differently by up to a
+  // millimeter far from the origin, and a mirror or a stove window 2 mm in front of its board flickers.
+  vec3 rel = mat3(m) * position + (m[3].xyz - cameraPosition);
+  vec4 wp = vec4(rel + cameraPosition, 1.0);
+  vOrigin = m[3].xyz;
   #ifdef SWAY
   float hgt = max(wp.y - vOrigin.y - 1.2, 0.0);
   float ph = vOrigin.x * 0.31 + vOrigin.z * 0.17;
-  wp.x += sin(uTime * 1.3 + ph + wp.y * 0.45) * 0.035 * hgt;
-  wp.z += cos(uTime * 1.07 + ph + wp.x * 0.3) * 0.03 * hgt;
+  float sx = sin(uTime * 1.3 + ph + wp.y * 0.45) * 0.035 * hgt;
+  float sz = cos(uTime * 1.07 + ph + (wp.x + sx) * 0.3) * 0.03 * hgt;
+  wp.xz += vec2(sx, sz);
+  rel.xz += vec2(sx, sz);
   #endif
   vWP = wp.xyz;
   vN = normalize(mat3(m) * normal);
   vUv = vec2(uv.x, 1.0 - uv.y);
-  gl_Position = projectionMatrix * viewMatrix * wp;
+  gl_Position = projectionMatrix * vec4(mat3(viewMatrix) * rel, 1.0);
 }
 `;
 
@@ -504,66 +560,28 @@ float grout(vec2 p, float size, float w) {
   return 1.0 - aastep(w, min(g.x, g.y));
 }
 
-// ---- finishes inside the khrushchyovka, picked per room from the hash (gRoom, gStyle from probeInterior)
+// ---- finishes inside the flats, picked per room from the hash (gRoom, gStyle from probeInterior)
 
 // Height of the steps or landing under a point of the stairwell (plan x, height, plan y)
 float stairFloor(vec3 lp) {
-  float pl = uPlan.z, fh = uPlan.w;
-  if (lp.y < pl - 0.1 && lp.z < 2.7) return uPlanTop.y;
-  float slope, base;
-  if (lp.z >= 3.81) { slope = 0.0; base = 0.0; }
-  else if (lp.z <= 1.85) { slope = 0.0; base = fh * 0.5; }
-  else if (lp.x < 8.0) { slope = 1.0; base = (3.81 - lp.z) / 1.96 * fh * 0.5; }
-  else { slope = 1.0; base = fh * 0.5 + (lp.z - 1.85) / 1.96 * fh * 0.5; }
+  float pl = uPlanDim[gPlan].z, fh = uPlanDim[gPlan].w;
+  vec4 st = uPlanStair[gPlan];
+  float flight = st.x - st.y;
+  if (lp.y < pl - 0.1 && lp.z < st.x - 1.1) return uPlanTop[gPlan].y;
+  float base;
+  if (lp.z >= st.x) base = 0.0;
+  else if (lp.z <= st.y) base = fh * 0.5;
+  else if (lp.x < st.z) base = (st.x - lp.z) / flight * fh * 0.5;
+  else base = fh * 0.5 + (lp.z - st.y) / flight * fh * 0.5;
   float f = floor((lp.y - pl - base + 0.2) / fh);
   return pl + f * fh + base;
 }
 
-vec3 wallFinish() {
-  float along = abs(gLN.x) > 0.5 ? gLP.z : gLP.x;
-  float hr = gLP.y - (uPlan.z + float(gFl) * uPlan.w);
-  vec2 p = vec2(along, gLP.y);
-  float n1 = vnoiseAA(p * 3.0), n2 = vnoiseAA(p * 0.7);
-  if (gRoom <= 0) {
-    // stairwell: oil paint up to 1.5 m above the steps, running up along the flights, whitewash above,
-    // a dark line between, scuffs on the paint
-    vec3 paint = pick4(hfrac(gB, gSec, 0, 90), vec3(0.3, 0.46, 0.37), vec3(0.3, 0.4, 0.56), vec3(0.44, 0.43, 0.3), vec3(0.47, 0.27, 0.22));
-    float lvl = gLP.y - stairFloor(gLP);
-    float lower = 1.0 - aastep(1.5, lvl);
-    vec3 c = mix(vec3(0.76, 0.75, 0.7) * (0.9 + 0.1 * n2), paint * (0.88 + 0.12 * n1), lower);
-    return mix(c, paint * 0.5, 1.0 - aastep(0.02, abs(lvl - 1.5)));
-  }
-  uint vh = hkey(gB, gSec, gFl, 70 + gRoom);
-  float v1 = float(vh % 97u) / 97.0, v2 = float((vh / 97u) % 89u) / 89.0;
-  float xp = gStyle;
-  if (gKind == 2) {
-    // bath: tiles up to 1.6 m and paint above in the Soviet flat, tiles all the way up in the 2000s
-    vec3 tile = xp > 0.5 ? pick4(v1, vec3(0.45, 0.6, 0.75), vec3(0.55, 0.72, 0.6), vec3(0.85, 0.78, 0.65), vec3(0.8, 0.62, 0.66))
-                         : pick4(v1, vec3(0.86, 0.87, 0.85), vec3(0.74, 0.84, 0.88), vec3(0.78, 0.86, 0.78), vec3(0.86, 0.86, 0.84));
-    float size = xp > 0.5 ? 0.2 : 0.15;
-    vec2 t = vec2(along, hr);
-    vec3 c = mix(tile * (0.95 + 0.07 * hash12(floor(t / size))), tile * 0.6, grout(t, size, 0.006));
-    if (xp > 0.5) c = mix(c, tile * 0.55, 1.0 - aastep(0.04, abs(hr - 1.05)));
-    else c = mix(c, vec3(0.72, 0.78, 0.8) * (0.9 + 0.1 * n2), aastep(1.6, hr));
-    return c;
-  }
-  if (gKind == 1 && xp < 0.5) {
-    // Soviet kitchen: oil paint up to 1.5 m, whitewash above
-    vec3 paint = pick4(v1, vec3(0.62, 0.74, 0.66), vec3(0.62, 0.7, 0.78), vec3(0.8, 0.74, 0.58), vec3(0.74, 0.78, 0.6));
-    vec3 c = mix(paint * (0.92 + 0.08 * n1), vec3(0.8, 0.79, 0.74) * (0.92 + 0.08 * n2), aastep(1.5, hr));
-    return mix(c, paint * 0.55, 1.0 - aastep(0.015, abs(hr - 1.5)));
-  }
-  vec3 bg, fg;
-  if (xp > 0.5) {
-    bg = pick4(v1, vec3(0.88, 0.8, 0.68), vec3(0.84, 0.84, 0.8), vec3(0.88, 0.84, 0.66), vec3(0.78, 0.84, 0.72));
-    fg = bg * 0.88;
-  } else {
-    bg = pick4(v1, vec3(0.78, 0.7, 0.54), vec3(0.6, 0.68, 0.54), vec3(0.74, 0.6, 0.55), vec3(0.62, 0.66, 0.7));
-    if (gKind == 3) bg *= 0.82;
-    fg = pick4(v2, bg * 0.6, vec3(0.55, 0.42, 0.25), bg * 1.15, vec3(0.45, 0.25, 0.22));
-  }
+// which of the four walls of a room this face is (0..3), for an accent wall
+float wallSide() { return abs(gLN.x) > 0.5 ? (gLN.x > 0.0 ? 0.0 : 1.0) : (gLN.z > 0.0 ? 2.0 : 3.0); }
+
+vec3 wallpaper(float kind, vec3 bg, vec3 fg, float along, float hr) {
   float pat;
-  float kind = xp > 0.5 ? (v2 < 0.5 ? 4.0 : 5.0) : floor(v2 * 3.999);
   if (kind < 0.5) {
     // stripes with a little flower in every second one
     float col3 = floor(along * 3.0);
@@ -586,12 +604,110 @@ vec3 wallFinish() {
     pat = step(0.5, sx) * 0.5 + (1.0 - aastep(0.02, abs(sx - 0.5))) * 0.5;
   } else if (kind < 4.5) {
     pat = vnoiseAA(vec2(along * 40.0, hr * 2.0)) * 0.4;
-  } else {
+  } else if (kind < 5.5) {
     pat = vnoiseAA(vec2(along, hr) * 18.0) * 0.35;
+  } else {
+    // vinyl of the 90s: big soft medallions and a sheen
+    vec2 q = vec2(along * 2.2, hr * 1.8);
+    q.x += step(1.0, mod(floor(q.y), 2.0)) * 0.5;
+    vec2 c = fract(q) - 0.5;
+    float r = length(c * vec2(1.0, 0.8));
+    pat = (1.0 - aastep(0.3, r)) * (0.5 + 0.5 * cos(atan(c.y, c.x) * 6.0)) * 0.6 + vnoiseAA(vec2(along, hr) * 30.0) * 0.15;
   }
-  vec3 c = mix(bg, fg, clamp(pat, 0.0, 1.0)) * (0.9 + 0.1 * n2);
-  // tiles behind the stove and the sink in the 2000s kitchen
-  if (gKind == 1) c = mix(c, mix(vec3(0.92, 0.9, 0.86), vec3(0.6), grout(vec2(along, hr), 0.1, 0.004)), aastep(0.9, hr) - aastep(1.5, hr));
+  return mix(bg, fg, clamp(pat, 0.0, 1.0));
+}
+
+vec3 wallFinish() {
+  float along = abs(gLN.x) > 0.5 ? gLP.z : gLP.x;
+  float hr = gLP.y - floorLevel(gFl);
+  vec2 p = vec2(along, gLP.y);
+  float n1 = vnoiseAA(p * 3.0), n2 = vnoiseAA(p * 0.7);
+  if (gRoom < 0 || gKind == 0) {
+    // stairwell: oil paint up to 1.5 m above the steps, running up along the flights, whitewash above,
+    // a dark line between, scuffs on the paint
+    vec3 paint = pick4(hfrac(gB, gSec, 0, 90), vec3(0.3, 0.46, 0.37), vec3(0.3, 0.4, 0.56), vec3(0.44, 0.43, 0.3), vec3(0.47, 0.27, 0.22));
+    float lvl = gLP.y - stairFloor(gLP);
+    float lower = 1.0 - aastep(1.5, lvl);
+    vec3 c = mix(vec3(0.76, 0.75, 0.7) * (0.9 + 0.1 * n2), paint * (0.88 + 0.12 * n1), lower);
+    return mix(c, paint * 0.5, 1.0 - aastep(0.02, abs(lvl - 1.5)));
+  }
+  // the lift shaft: bare concrete
+  if (gKind == 5) return vec3(0.42, 0.41, 0.39) * (0.8 + 0.2 * n1);
+  uint vh = hkey(gB, gSec, gFl, 70 + gRoom);
+  float v1 = float(vh % 97u) / 97.0, v2 = float((vh / 97u) % 89u) / 89.0;
+  float st = gStyle;
+  bool soviet = st < 0.5 || st > 3.5;
+  // the old lady's flat: the paper has gone yellow and dull, damp stains, grime along the floor
+  float aged = step(3.5, st);
+  if (gKind == 2) {
+    vec3 tile;
+    float size;
+    vec2 t = vec2(along, hr);
+    if (st > 2.5 && st < 3.5) {
+      // 2010s: big pale tiles laid flat
+      tile = pick4(v1, vec3(0.86, 0.86, 0.84), vec3(0.7, 0.71, 0.72), vec3(0.82, 0.8, 0.76), vec3(0.6, 0.62, 0.62));
+      vec2 c = floor(t / vec2(0.6, 0.3));
+      vec3 c3 = mix(tile * (0.96 + 0.04 * hash12(c)), tile * 0.75, grout(t * vec2(0.5, 1.0), 0.3, 0.004));
+      return c3;
+    }
+    if (st > 1.5 && st < 2.5) {
+      // evroremont: beige glazed tiles all the way up with a dark border at 1.2 m
+      tile = pick4(v1, vec3(0.86, 0.78, 0.64), vec3(0.8, 0.74, 0.66), vec3(0.74, 0.8, 0.82), vec3(0.88, 0.82, 0.72));
+      size = 0.25;
+      vec3 c = mix(tile * (0.95 + 0.07 * hash12(floor(t / size))), tile * 0.6, grout(t, size, 0.005));
+      return mix(c, tile * 0.4, 1.0 - aastep(0.05, abs(hr - 1.2)));
+    }
+    // bath: tiles up to 1.6 m and paint above in the Soviet flat, tiles all the way up in the 2000s
+    bool xp = st > 0.5 && st < 1.5;
+    tile = xp ? pick4(v1, vec3(0.45, 0.6, 0.75), vec3(0.55, 0.72, 0.6), vec3(0.85, 0.78, 0.65), vec3(0.8, 0.62, 0.66))
+              : pick4(v1, vec3(0.86, 0.87, 0.85), vec3(0.74, 0.84, 0.88), vec3(0.78, 0.86, 0.78), vec3(0.86, 0.86, 0.84));
+    size = xp ? 0.2 : 0.15;
+    vec3 c = mix(tile * (0.95 + 0.07 * hash12(floor(t / size))), tile * 0.6, grout(t, size, 0.006));
+    if (xp) c = mix(c, tile * 0.55, 1.0 - aastep(0.04, abs(hr - 1.05)));
+    else c = mix(c, vec3(0.72, 0.78, 0.8) * (0.9 + 0.1 * n2), aastep(1.6, hr));
+    return c * mix(1.0, 0.8 + 0.2 * n2, aged);
+  }
+  if (gKind == 1 && soviet) {
+    // Soviet kitchen: oil paint up to 1.5 m, whitewash above
+    vec3 paint = pick4(v1, vec3(0.62, 0.74, 0.66), vec3(0.62, 0.7, 0.78), vec3(0.8, 0.74, 0.58), vec3(0.74, 0.78, 0.6));
+    vec3 c = mix(paint * (0.92 + 0.08 * n1), vec3(0.8, 0.79, 0.74) * (0.92 + 0.08 * n2), aastep(1.5, hr));
+    c = mix(c, paint * 0.55, 1.0 - aastep(0.015, abs(hr - 1.5)));
+    return mix(c, c * vec3(0.86, 0.8, 0.66) * (0.85 + 0.15 * n2), aged * 0.7);
+  }
+  vec3 c;
+  if (st > 2.5 && st < 3.5) {
+    // 2010s: painted plaster, white or grey, one wall of the room in a deep color
+    vec3 bg = pick4(v1, vec3(0.9, 0.9, 0.88), vec3(0.8, 0.8, 0.79), vec3(0.9, 0.87, 0.82), vec3(0.78, 0.76, 0.72));
+    vec3 accent = pick4(v2, vec3(0.22, 0.34, 0.38), vec3(0.42, 0.5, 0.42), vec3(0.3, 0.3, 0.32), vec3(0.62, 0.48, 0.38));
+    bool acc = gKind == 4 && abs(wallSide() - floor(v2 * 3.999)) < 0.5;
+    c = (acc ? accent : bg) * (0.97 + 0.03 * n2);
+  } else if (st > 1.5 && st < 2.5) {
+    // evroremont: vinyl wallpaper in peach, gold or cream with soft medallions
+    vec3 bg = pick4(v1, vec3(0.92, 0.8, 0.68), vec3(0.88, 0.8, 0.6), vec3(0.9, 0.86, 0.76), vec3(0.78, 0.82, 0.74));
+    c = wallpaper(6.0, bg, bg * 0.86, along, hr) * (0.95 + 0.05 * n2);
+  } else if (st > 0.5 && st < 1.5) {
+    vec3 bg = pick4(v1, vec3(0.88, 0.8, 0.68), vec3(0.84, 0.84, 0.8), vec3(0.88, 0.84, 0.66), vec3(0.78, 0.84, 0.72));
+    c = wallpaper(v2 < 0.5 ? 4.0 : 5.0, bg, bg * 0.88, along, hr) * (0.9 + 0.1 * n2);
+  } else {
+    vec3 bg = pick4(v1, vec3(0.78, 0.7, 0.54), vec3(0.6, 0.68, 0.54), vec3(0.74, 0.6, 0.55), vec3(0.62, 0.66, 0.7));
+    if (gKind == 3) bg *= 0.82;
+    vec3 fg = pick4(v2, bg * 0.6, vec3(0.55, 0.42, 0.25), bg * 1.15, vec3(0.45, 0.25, 0.22));
+    c = wallpaper(floor(v2 * 3.999), bg, fg, along, hr) * (0.9 + 0.1 * n2);
+    if (aged > 0.5) {
+      c = mix(c, vec3(dot(c, vec3(0.33))) * vec3(1.0, 0.93, 0.75), 0.45) * 0.9;
+      float stain = smoothstep(0.62, 0.8, vnoiseAA(p * 1.3 + 7.0)) * smoothstep(1.4, 2.4, hr);
+      c = mix(c, c * vec3(0.72, 0.62, 0.45), stain * 0.7);
+      c *= 0.82 + 0.18 * smoothstep(0.0, 0.35, hr);
+    }
+  }
+  // tiles behind the stove and the sink
+  if (gKind == 1) {
+    vec2 t = vec2(along, hr);
+    vec3 tl = st > 2.5 ? mix(vec3(0.92, 0.92, 0.9), vec3(0.62), grout(t * vec2(1.0, 2.0), 0.15, 0.004))
+            : st > 1.5 ? mix(vec3(0.86, 0.78, 0.66), vec3(0.55, 0.48, 0.4), grout(t, 0.2, 0.004))
+            : mix(vec3(0.92, 0.9, 0.86), vec3(0.6), grout(t, 0.1, 0.004));
+    c = mix(c, tl, aastep(0.9, hr) - aastep(1.5, hr));
+  }
   return c;
 }
 
@@ -599,28 +715,47 @@ vec3 floorFinish() {
   vec2 q = gLP.xz;
   float n1 = vnoiseAA(q * 2.0);
   if (gRoom < 0) return vec3(0.45, 0.32, 0.2) * (0.9 + 0.1 * n1);
-  if (gRoom == 0) {
+  if (gKind == 0) {
     // stairwell: little Metlakh tiles, brown and beige, dirtier where people walk
     vec2 c = floor(q / 0.1);
     vec3 t = mix(vec3(0.5, 0.3, 0.2), vec3(0.72, 0.62, 0.48), mod(c.x + c.y, 2.0)) * (0.9 + 0.1 * hash12(c));
     return mix(t, t * 0.6, grout(q, 0.1, 0.004)) * (0.8 + 0.2 * vnoiseAA(q * 0.7));
   }
+  if (gKind == 5) return vec3(0.3, 0.29, 0.27) * (0.8 + 0.2 * n1);
   uint vh = hkey(gB, gSec, gFl, 80 + gRoom);
   float v1 = float(vh % 97u) / 97.0, v2 = float((vh / 97u) % 89u) / 89.0;
-  float xp = gStyle;
+  float st = gStyle;
+  bool soviet = st < 0.5 || st > 3.5;
+  float aged = step(3.5, st);
   if (gKind == 2) {
-    float size = xp > 0.5 ? 0.3 : 0.1;
-    vec3 t = xp > 0.5 ? vec3(0.62, 0.6, 0.58) : pick4(v1, vec3(0.6, 0.45, 0.35), vec3(0.72, 0.68, 0.6), vec3(0.55, 0.55, 0.52), vec3(0.65, 0.5, 0.4));
+    if (st > 2.5) {
+      vec3 t = pick4(v1, vec3(0.36, 0.36, 0.37), vec3(0.62, 0.6, 0.57), vec3(0.3, 0.3, 0.31), vec3(0.5, 0.48, 0.46));
+      return mix(t * (0.95 + 0.05 * hash12(floor(q / 0.6))), t * 0.6, grout(q, 0.6, 0.003));
+    }
+    float size = soviet ? 0.1 : st > 1.5 ? 0.33 : 0.3;
+    vec3 t = st > 1.5 ? vec3(0.72, 0.64, 0.54) : st > 0.5 ? vec3(0.62, 0.6, 0.58)
+           : pick4(v1, vec3(0.6, 0.45, 0.35), vec3(0.72, 0.68, 0.6), vec3(0.55, 0.55, 0.52), vec3(0.65, 0.5, 0.4));
     vec2 c = floor(q / size);
-    if (xp < 0.5) t = mix(t, t * 0.75, mod(c.x + c.y, 2.0) * step(0.5, v2));
-    return mix(t * (0.94 + 0.08 * hash12(c)), t * 0.55, grout(q, size, 0.005));
+    if (soviet) t = mix(t, t * 0.75, mod(c.x + c.y, 2.0) * step(0.5, v2));
+    return mix(t * (0.94 + 0.08 * hash12(c)), t * 0.55, grout(q, size, 0.005)) * mix(1.0, 0.8 + 0.2 * n1, aged);
   }
   if (gKind == 1 || gKind == 3) {
-    if (xp > 0.5) {
+    if (st > 2.5 && st < 3.5) {
+      // large porcelain tiles, light grey or concrete-like
+      vec3 t = pick4(v1, vec3(0.78, 0.77, 0.75), vec3(0.62, 0.61, 0.6), vec3(0.84, 0.82, 0.78), vec3(0.5, 0.49, 0.48));
+      return mix(t * (0.96 + 0.05 * hash12(floor(q / 0.6))), t * 0.65, grout(q, 0.6, 0.003));
+    }
+    if (st > 1.5 && st < 2.5) {
+      // beige ceramic laid on the diagonal
+      vec2 d = vec2(q.x + q.y, q.x - q.y) * 0.7071;
+      vec3 t = pick4(v1, vec3(0.82, 0.74, 0.62), vec3(0.74, 0.66, 0.56), vec3(0.86, 0.82, 0.74), vec3(0.6, 0.5, 0.42));
+      return mix(t * (0.95 + 0.06 * hash12(floor(d / 0.33))), t * 0.6, grout(d, 0.33, 0.004));
+    }
+    if (st > 0.5 && st < 1.5) {
       vec3 t = pick4(v1, vec3(0.78, 0.72, 0.62), vec3(0.62, 0.58, 0.54), vec3(0.8, 0.78, 0.74), vec3(0.6, 0.48, 0.36));
       return mix(t * (0.95 + 0.06 * hash12(floor(q / 0.3))), t * 0.6, grout(q, 0.3, 0.004));
     }
-    // linoleum with a printed pattern
+    // linoleum with a printed pattern (worn through to the base along the paths in the old flat)
     vec3 base = pick4(v1, vec3(0.5, 0.36, 0.24), vec3(0.45, 0.48, 0.42), vec3(0.62, 0.55, 0.42), vec3(0.55, 0.28, 0.2));
     float pat;
     if (v2 < 0.33) {
@@ -632,9 +767,30 @@ vec3 floorFinish() {
     } else {
       pat = step(0.55, vnoiseAA(q * 6.0)) * 0.6;
     }
-    return mix(base, base * 0.7, pat) * (0.88 + 0.12 * n1);
+    vec3 c = mix(base, base * 0.7, pat) * (0.88 + 0.12 * n1);
+    return mix(c, vec3(0.42, 0.36, 0.3), aged * smoothstep(0.55, 0.8, vnoiseAA(q * 0.9)) * 0.8);
   }
-  if (xp > 0.5) {
+  if (st > 2.5 && st < 3.5) {
+    // light oak, wide planks
+    float row = floor(q.x / 0.2);
+    float y = q.y + hash12(vec2(row, 5.0)) * 1.4;
+    vec3 t = vec3(0.78, 0.66, 0.5) * (0.9 + 0.12 * hash12(vec2(row, floor(y / 1.4))));
+    t *= 0.93 + 0.07 * vnoiseAA(vec2(q.x * 50.0, y * 3.0));
+    float seam = max(1.0 - aastep(0.003, abs(fract(q.x / 0.2 + 0.5) - 0.5) * 0.2), 1.0 - aastep(0.003, abs(fract(y / 1.4 + 0.5) - 0.5) * 1.4));
+    return mix(t, t * 0.7, seam);
+  }
+  if (st > 1.5 && st < 2.5) {
+    // varnished herringbone parquet, dark and glossy
+    vec2 h = q / 0.07;
+    float row = floor(h.x);
+    float zig = mod(row, 2.0);
+    float y = h.y * 0.25 + (zig > 0.5 ? h.x * 0.5 : -h.x * 0.5);
+    float blk = floor(y);
+    vec3 t = vec3(0.42, 0.22, 0.1) * (0.85 + 0.25 * hash12(vec2(row, blk)));
+    float seam = max(1.0 - aastep(0.05, abs(fract(h.x) - 0.5) * 2.0 - 0.9), 1.0 - aastep(0.04, abs(fract(y) - 0.5) * 2.0 - 0.92));
+    return mix(t, t * 0.55, seam) * (0.92 + 0.12 * n1);
+  }
+  if (st > 0.5 && st < 1.5) {
     // laminate: 19 cm planks with staggered joints
     float row = floor(q.x / 0.19);
     float y = q.y + hash12(vec2(row, 3.0)) * 1.2;
@@ -643,10 +799,11 @@ vec3 floorFinish() {
     float seam = max(1.0 - aastep(0.004, abs(fract(q.x / 0.19 + 0.5) - 0.5) * 0.19), 1.0 - aastep(0.004, abs(fract(y / 1.2 + 0.5) - 0.5) * 1.2));
     return mix(t, t * 0.6, seam);
   }
-  if (v1 < 0.35) {
-    // painted floorboards
+  if (v1 < 0.35 || aged > 0.5) {
+    // painted floorboards, worn to the wood in the old flat
     float row = floor(q.y / 0.13);
     vec3 t = vec3(0.42, 0.19, 0.12) * (0.92 + 0.12 * hash12(vec2(row, 1.0))) * (0.85 + 0.15 * vnoiseAA(vec2(q.x * 2.0, q.y * 20.0)));
+    t = mix(t, vec3(0.42, 0.33, 0.24), aged * smoothstep(0.5, 0.8, vnoiseAA(q * 1.1)) * 0.7);
     return mix(t, t * 0.5, 1.0 - aastep(0.005, abs(fract(q.y / 0.13 + 0.5) - 0.5) * 0.13));
   }
   // parquet in square blocks, the planks turning in every other block
@@ -664,8 +821,17 @@ vec3 floorFinish() {
 
 vec3 ceilFinish() {
   float n = vnoiseAA(gLP.xz * 1.5);
-  if (gRoom == 0) return vec3(0.6, 0.6, 0.58) * (0.85 + 0.15 * n);
-  return (gStyle > 0.5 ? vec3(0.86, 0.86, 0.84) : vec3(0.8, 0.8, 0.76)) * (0.94 + 0.06 * n);
+  if (gKind == 0 || gRoom < 0) return vec3(0.6, 0.6, 0.58) * (0.85 + 0.15 * n);
+  if (gKind == 5) return vec3(0.36, 0.35, 0.33);
+  float st = gStyle;
+  if (st > 3.5) {
+    // yellowed whitewash with a crack or two
+    float crack = 1.0 - aastep(0.006, abs(vnoiseAA(gLP.xz * 0.8) - 0.5) * 0.15);
+    return vec3(0.74, 0.71, 0.62) * (0.9 + 0.1 * n) * (1.0 - crack * 0.25);
+  }
+  if (st > 2.5) return vec3(0.9, 0.9, 0.89);
+  if (st > 1.5) return vec3(0.93, 0.92, 0.9) * (0.98 + 0.02 * n);
+  return (st > 0.5 ? vec3(0.86, 0.86, 0.84) : vec3(0.8, 0.8, 0.76)) * (0.94 + 0.06 * n);
 }
 
 vec3 baseColor() {
@@ -730,7 +896,8 @@ void main() {
   float stairOn = -1.0;
   vec3 lc;
   if (cell.x > 9999.5) {
-    // the khrushchyovka with interiors: room, section and floor from the cell, lit like the room behind it
+    // a building with interiors: room (in the list of all plans), section and floor from the cell, lit like the
+    // room behind it
     ivec2 b = ivec2(round(vOrigin.x * 2.0), round(vOrigin.z * 2.0));
     float cy = cell.y;
     k = step(499.5, cy) * 3.0;
@@ -741,16 +908,17 @@ void main() {
     int ra = int(uRoomInfo[room].x);
     int rk = int(uRoomInfo[room].y);
     if (k < 0.5) k = rk == 1 ? 0.0 : 1.0;
-    stair = room == 0 ? 1.0 : 0.0;
+    stair = rk == 0 ? 1.0 : 0.0;
     apt = float(ra * 7 + sec * 31 + fl * 3);
     ah = hfrac(b, sec, fl, 60 + ra);
     wh = hfrac(b, sec, fl, 64 + room);
     home = hkey(b, sec, fl, 10 + ra) % 100u < 62u ? 1.0 : 0.0;
     lit = roomLit(b, sec, fl, room) ? 1.0 : 0.0;
-    if (room == 0) stairOn = lit;
-    float st = aptStyle(b, sec, fl, ra);
+    if (rk == 0) stairOn = lit;
+    float st = ra > 0 ? aptStyle(b, sec, fl, ra) : 0.0;
     lc = lampColor(b, sec, fl, ra, rk, st);
-    plastic = st;
+    // plastic windows came with the renovations of the 90s, 2000s and 2010s
+    plastic = st > 0.5 && st < 3.5 ? 1.0 : 0.0;
   } else {
     stair = step(3999.5, cell.x);
     apt = floor(cell.x / 4.0);
@@ -1014,7 +1182,19 @@ void main() {
     vec2 c = abs(vUv - 0.5) * 2.0;
     float v1 = hfrac(gB, gSec, gFl, 100 + max(gRoom, 0) + int(uVar) * 7);
     vec3 cc;
-    if (uVar > 0.5) {
+    if (uVar > 2.5) {
+      // the 2010s: a pale flat-woven rug with thin stripes
+      vec3 base = pick4(v1, vec3(0.78, 0.76, 0.72), vec3(0.6, 0.62, 0.64), vec3(0.74, 0.7, 0.62), vec3(0.36, 0.4, 0.42));
+      cc = mix(base, base * 0.8, (1.0 - aastep(0.06, abs(fract(vUv.y * 9.0) - 0.5))) * 0.6);
+    } else if (uVar > 1.5) {
+      // the 90s: a thick rug in beige or burgundy with a key pattern round the edge
+      vec3 base = pick4(v1, vec3(0.62, 0.5, 0.36), vec3(0.42, 0.1, 0.1), vec3(0.2, 0.25, 0.36), vec3(0.6, 0.55, 0.45));
+      float m = max(c.x, c.y);
+      vec2 o = fract(vUv * vec2(16.0, 12.0)) - 0.5;
+      float key = step(0.82, m) * (1.0 - step(0.94, m)) * step(0.0, o.x * o.y);
+      cc = mix(base, base * 0.55 + vec3(0.25, 0.2, 0.1), key);
+      cc = mix(cc, base * 0.6, step(0.94, m));
+    } else if (uVar > 0.5) {
       // a plain modern rug with a border
       vec3 base = pick4(v1, vec3(0.5, 0.46, 0.42), vec3(0.35, 0.38, 0.42), vec3(0.55, 0.48, 0.36), vec3(0.42, 0.3, 0.28));
       cc = mix(base, base * 0.65, step(0.88, max(c.x, c.y)));
@@ -1044,12 +1224,22 @@ void main() {
     float v1 = hfrac(gB, gSec, gFl, 120 + gApt * 9 + int(uVar));
     float v2 = hfrac(gB, gSec, gFl, 130 + gApt * 9 + int(uVar));
     vec3 c;
-    if (uVar < 0.5) c = gStyle > 0.5 ? pick4(v1, vec3(0.45, 0.42, 0.38), vec3(0.3, 0.32, 0.36), vec3(0.55, 0.5, 0.42), vec3(0.4, 0.22, 0.18))
-                                     : pick4(v1, vec3(0.42, 0.26, 0.16), vec3(0.28, 0.36, 0.24), vec3(0.5, 0.16, 0.14), vec3(0.55, 0.42, 0.18));
-    else if (uVar < 1.5) c = pick4(v1, vec3(0.5, 0.32, 0.18), vec3(0.3, 0.38, 0.26), vec3(0.6, 0.42, 0.2), vec3(0.45, 0.2, 0.22)) * (gStyle > 0.5 ? 1.15 : 1.0);
+    // by the style of the flat: Soviet (and the old lady's), the 2000s, the evroremont, the 2010s
+    float st = gStyle;
+    bool sov = st < 0.5 || st > 3.5;
+    if (uVar < 0.5) c = sov ? pick4(v1, vec3(0.42, 0.26, 0.16), vec3(0.28, 0.36, 0.24), vec3(0.5, 0.16, 0.14), vec3(0.55, 0.42, 0.18))
+                      : st < 1.5 ? pick4(v1, vec3(0.45, 0.42, 0.38), vec3(0.3, 0.32, 0.36), vec3(0.55, 0.5, 0.42), vec3(0.4, 0.22, 0.18))
+                      : st < 2.5 ? pick4(v1, vec3(0.58, 0.45, 0.32), vec3(0.45, 0.12, 0.12), vec3(0.62, 0.5, 0.28), vec3(0.22, 0.24, 0.32))
+                      : pick4(v1, vec3(0.5, 0.51, 0.53), vec3(0.3, 0.42, 0.44), vec3(0.64, 0.62, 0.58), vec3(0.26, 0.27, 0.29));
+    else if (uVar < 1.5) c = st > 2.5 && st < 3.5 ? pick4(v1, vec3(0.8, 0.78, 0.74), vec3(0.6, 0.62, 0.64), vec3(0.72, 0.68, 0.6), vec3(0.4, 0.45, 0.5))
+                           : st > 1.5 && st < 2.5 ? pick4(v1, vec3(0.5, 0.12, 0.14), vec3(0.66, 0.5, 0.22), vec3(0.36, 0.4, 0.22), vec3(0.7, 0.6, 0.46))
+                           : pick4(v1, vec3(0.5, 0.32, 0.18), vec3(0.3, 0.38, 0.26), vec3(0.6, 0.42, 0.2), vec3(0.45, 0.2, 0.22)) * (st > 0.5 && st < 1.5 ? 1.15 : 1.0);
     else if (uVar < 2.5) c = pick4(v1, vec3(0.7, 0.55, 0.55), vec3(0.55, 0.62, 0.72), vec3(0.75, 0.7, 0.5), vec3(0.6, 0.7, 0.6));
     else if (uVar < 3.5) c = pick4(v1, vec3(0.4, 0.5, 0.65), vec3(0.65, 0.4, 0.35), vec3(0.45, 0.6, 0.45), vec3(0.6, 0.55, 0.4));
-    else if (uVar < 4.5) c = gStyle > 0.5 ? pick4(v1, vec3(0.82, 0.78, 0.65), vec3(0.62, 0.72, 0.6), vec3(0.6, 0.2, 0.18), vec3(0.6, 0.65, 0.72)) : vec3(0.85, 0.84, 0.8);
+    else if (uVar < 4.5) c = sov ? vec3(0.85, 0.84, 0.8)
+                           : st < 1.5 ? pick4(v1, vec3(0.82, 0.78, 0.65), vec3(0.62, 0.72, 0.6), vec3(0.6, 0.2, 0.18), vec3(0.6, 0.65, 0.72))
+                           : st < 2.5 ? pick4(v1, vec3(0.45, 0.28, 0.16), vec3(0.5, 0.14, 0.14), vec3(0.76, 0.72, 0.64), vec3(0.22, 0.34, 0.28))
+                           : pick4(v1, vec3(0.9, 0.9, 0.88), vec3(0.72, 0.73, 0.73), vec3(0.56, 0.63, 0.56), vec3(0.26, 0.28, 0.31));
     else c = vec3(0.36, 0.2, 0.14);
     vec3 pp = vWP * 18.0;
     c *= 0.9 + 0.1 * vnoiseAA(pp.xz + pp.y);
@@ -1390,12 +1580,50 @@ const DEFS = (() => {
     pk_grille: { mode: 'flat', tint: C(0.2, 0.15, 0.1) },
     pk_globe: { mode: 'flat', tint: C(0.3, 0.5, 0.7) },
     pk_terracotta: { mode: 'flat', tint: C(0.6, 0.3, 0.18) },
+    // the newer styles of the flats (rooms.py)
+    pk_gloss_black: { mode: 'flat', tint: C(0.05, 0.045, 0.05) },
+    pk_plush: { mode: 'fabric', variant: 0 },
+    pk_fabric_grey: { mode: 'flat', tint: C(0.42, 0.43, 0.45) },
+    pk_cushion_a: { mode: 'flat', tint: C(0.72, 0.62, 0.42) },
+    pk_cushion_b: { mode: 'flat', tint: C(0.55, 0.6, 0.62) },
+    pk_bedding_eu: { mode: 'flat', tint: C(0.55, 0.12, 0.14) },
+    pk_white_matte: { mode: 'flat', tint: C(0.86, 0.86, 0.84) },
+    pk_wood_oak: { mode: 'tex', tex: 'planks', scale: 0.8, tint: C(1.0, 0.92, 0.78) },
+    pk_steel: { mode: 'flat', tint: C(0.66, 0.68, 0.7) },
+    pk_glass_black: { mode: 'flat', tint: C(0.03, 0.03, 0.035) },
+    pk_lace: { mode: 'flat', tint: C(0.93, 0.92, 0.88) },
+    pk_iron: { mode: 'flat', tint: C(0.16, 0.17, 0.18) },
+    pk_poster_a: { mode: 'flat', tint: C(0.78, 0.4, 0.32) },
+    pk_poster_b: { mode: 'flat', tint: C(0.3, 0.45, 0.6) },
+    pk_aquarium: { mode: 'glow', tint: C(0.25, 0.6, 0.62), glow: 0.7 },
+    pk_glow_spot: { mode: 'glow', tint: C(1.0, 0.9, 0.72), glow: 1.6 },
+    pk_glow_panel: { mode: 'glow', tint: C(0.95, 0.96, 1.0), glow: 1.4 },
+    pk_newspaper: { mode: 'flat', tint: C(0.74, 0.72, 0.66) },
+    pk_jar: { mode: 'flat', tint: C(0.55, 0.62, 0.42) },
+    pk_cardboard: { mode: 'flat', tint: C(0.6, 0.46, 0.3) },
+    pk_rug_eu: { mode: 'carpet', variant: 2 },
+    pk_rug_mod: { mode: 'carpet', variant: 3 },
+    // the lift and the stairwell of the nine-storey (k9i.py)
+    pk_lift_frame: { mode: 'flat', tint: C(0.34, 0.31, 0.27) },
+    pk_lift_wall: { mode: 'tex', tex: 'planks', scale: 0.7, tint: C(0.72, 0.5, 0.32) },
+    pk_lift_floor: { mode: 'flat', tint: C(0.17, 0.16, 0.15) },
+    pk_lift_ceil: { mode: 'flat', tint: C(0.6, 0.6, 0.58) },
+    pk_lift_lamp: { mode: 'glow', tint: C(1.0, 0.93, 0.78), glow: 1.3 },
+    pk_lift_door: { mode: 'tex', tex: 'metal', scale: 1, tint: C(0.6, 0.55, 0.46) },
+    pk_lift_panel: { mode: 'tex', rtex: 'liftPanel', scale: 1, tint: C(1, 1, 1) },
+    pk_floornum: { mode: 'tex', rtex: 'floorNum', scale: 1, tint: C(1, 1, 1) },
+    pk_lamp_off: { mode: 'flat', tint: C(0.22, 0.05, 0.04) },
+    pk_glow_yellow: { mode: 'glow', tint: C(1.0, 0.78, 0.2), glow: 1.5 },
+    pk_chute: { mode: 'tex', tex: 'metal', scale: 1, tint: C(0.62, 0.64, 0.6) },
   };
 })();
 
 const cache = new Map();
 let signAtlas = null;
 export function setSignAtlas(t) { signAtlas = t; }
+// textures drawn in the browser (textures.js), set before the models load
+const runtimeTex = {};
+export function setRuntimeTexture(name, t) { runtimeTex[name] = t; }
 
 export function namedMaterial(name, fallbackColor) {
   if (cache.has(name)) return cache.get(name);
@@ -1410,6 +1638,7 @@ export function makeMaterial(def) {
   const defines = { ['MODE_' + def.mode.toUpperCase()]: '' };
   let map = null;
   if (def.tex) { map = typeof def.tex === 'string' ? tex(def.tex) : def.tex; defines.HAS_MAP = ''; }
+  if (def.rtex && runtimeTex[def.rtex]) { map = runtimeTex[def.rtex]; defines.HAS_MAP = ''; }
   if (def.mode === 'sign') map = signAtlas;
   if (def.sway) defines.SWAY = '';
   if (def.snowcap) defines.SNOWCAP = '';
