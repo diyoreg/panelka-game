@@ -1,4 +1,4 @@
-// Player controller: walk, run, jump, crouch, climb onto ledges, collisions, third/first person camera.
+// Player controller: walk, run, jump, crouch, ladders, collisions, third/first person camera.
 
 import * as THREE from 'three';
 
@@ -18,9 +18,14 @@ const SPEED = { walk: 1.5, run: 5.2, crouch: 2.0 };
 // creative flight, like Minecraft: double Space toggles it
 const FLY = { speed: 9, fast: 20, vertical: 7, ceiling: 320 };
 const DOUBLE_TAP = 300;   // ms
-// Space in front of a ledge (a balcony, a canopy, a car roof, a garage) climbs onto it instead of jumping.
-// From a balcony you reach the floor of the one above: out over the rail, up, and back in.
-const CLIMB = { reach: 3.05, probe: [0.45, 0.8, 1.15, 0], speed: 4.2 };
+// Ladders, as in Half-Life: walk into one and you hold on to it. W climbs where you look (up, or down while you
+// look down), S the other way, Space lets go. Slow, the way you climb a steel ladder in a stairwell. At the top of
+// the roof ladder you pull yourself out through the open hatch; walking into the open hatch from the roof takes
+// you down onto the ladder. (Climbing onto balconies and ledges is gone: it carried you through walls into the
+// flats. Street climbing comes later.)
+// grab: how close in front of the ladder (along it, across it); snap: seconds to settle onto it;
+// out: how far under the roof your feet are when you pull yourself out; rung: their spacing, for the head bob
+const LADDER = { up: 0.8, down: 1.0, lookDown: -0.45, grab: [0.45, 0.28], snap: 0.25, out: 1.0, rung: 0.28 };
 
 export class Input {
   constructor() {
@@ -84,7 +89,11 @@ export class Player {
     this.bob = 0;
     this.camPos = new THREE.Vector3();
     this.camLook = new THREE.Vector3();
-    this.climb = null;         // { path, t, len } while climbing
+    this.ladder = null;        // { L, snap, from } while holding on to a ladder
+    this.climbVel = 0;         // up or down the ladder, m/s
+    this.climbed = 0;          // meters climbed, for the head bob and the steps
+    this.scene = null;         // { segs, i, t, done } while pulling yourself out of the hatch or climbing in
+    this.ladders = () => [];   // set by main.js: the ladders near you (interiors.js)
     this.indoor = false;       // inside a building (set by main.js): the camera stays closer
     this.flash = false;        // flashlight on (F)
   }
@@ -98,7 +107,9 @@ export class Player {
     this.camYaw = p.camYaw ?? p.yaw ?? 0;
     this.facing = p.yaw ?? this.camYaw;
     this.camPitch = p.camPitch ?? -0.08;
-    this.climb = null;
+    this.ladder = null;
+    this.scene = null;
+    this.climbVel = 0;
     this.unstick();
   }
 
@@ -124,8 +135,13 @@ export class Player {
     this.camPitch -= input.mouse.dy * sens * (s.invertY ? -1 : 1);
     this.camPitch = Math.max(-1.35, Math.min(1.25, this.camPitch));
 
-    if (this.climb) {
-      this.updateClimb(dt);
+    if (this.scene) {
+      this.updateScene(dt);
+      this.updateCamera(dt);
+      return;
+    }
+    if (this.ladder) {
+      this.updateLadder(dt, input);
       this.updateCamera(dt);
       return;
     }
@@ -134,10 +150,6 @@ export class Player {
     if (input.double('KeyW', 'ArrowUp')) this.sprint = true;
     // double tap Space: flight on and off, a single tap is a jump
     let jumpPressed = input.hit('Space') && !input.double('Space');
-    if (jumpPressed && this.onGround && !this.flying && this.startClimb()) {
-      this.updateCamera(dt);
-      return;
-    }
     if (input.double('Space')) {
       this.flying = !this.flying;
       if (this.flying) {
@@ -175,6 +187,11 @@ export class Player {
     const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
     const want = new THREE.Vector3();
     if (len > 0) want.addScaledVector(fwd, fz / len).addScaledVector(right, fx / len).multiplyScalar(maxV);
+    // walking into a ladder grabs it, walking into the open hatch from the roof climbs down onto it
+    if (len > 0 && !this.flying && this.grabLadder(want)) {
+      this.updateCamera(dt);
+      return;
+    }
     const accel = this.flying ? 5 : this.onGround ? (len > 0 ? 10 : 12) : 2.5;
     const hv = new THREE.Vector3(this.vel.x, 0, this.vel.z);
     hv.lerp(want, Math.min(1, accel * dt));
@@ -222,93 +239,150 @@ export class Player {
     this.updateCamera(dt);
   }
 
-  // ---------------------------------------------------------------- climbing
+  // ---------------------------------------------------------------- ladders
 
-  // Look for a surface to climb onto in front of the camera (or right above, under a balcony)
-  startClimb() {
-    const p = this.pos;
-    const fx = -Math.sin(this.camYaw), fz = -Math.cos(this.camYaw);
-    const cols = this.world.collidersNear(p.x, p.z, 3.2);
-    for (const d of CLIMB.probe) {
-      const tx = p.x + fx * d, tz = p.z + fz * d;
-      const tops = [];
-      for (const b of cols) {
-        if (tx < b.min.x || tx > b.max.x || tz < b.min.z || tz > b.max.z) continue;
-        if (b.max.y > p.y + STEP && b.max.y <= p.y + CLIMB.reach) tops.push(b.max.y);
-      }
-      tops.sort((a, b) => a - b);
-      for (const ty of tops) {
-        const target = new THREE.Vector3(tx, ty, tz);
-        const stand = !cols.some((b) => this.overlaps(b, target, STAND_H));
-        const crouch = stand || !cols.some((b) => this.overlaps(b, target, CROUCH_H));
-        if (!crouch) continue;
-        const path = this.climbPath(target, fx, fz, cols);
-        if (!path) continue;
-        let len = 0;
-        for (let i = 1; i < path.length; i++) len += path[i].distanceTo(path[i - 1]);
-        this.climb = { path, t: 0, len, crouch: !stand };
-        this.vel.set(0, 0, 0);
-        this.onGround = false;
-        this.sprint = false;
-        this.facing = Math.atan2(fx, fz);
+  // where you are in the terms of a ladder: along its n from the stand point, across it, feet above its foot
+  ladderLocal(L) {
+    const dx = this.pos.x - L.stand.x, dz = this.pos.z - L.stand.z;
+    return { along: dx * L.n.x + dz * L.n.z, across: dx * -L.n.z + dz * L.n.x, up: this.pos.y - L.y0 };
+  }
+
+  grabLadder(want) {
+    const w = want.clone().normalize();
+    for (const L of this.ladders()) {
+      const q = this.ladderLocal(L);
+      // on the top landing, right in front of the rungs and walking at them
+      if (this.onGround && q.up > -0.1 && q.up < L.roof - L.y0 - LADDER.out - 0.2 && Math.abs(q.across) < LADDER.grab[1]
+        && q.along > -LADDER.grab[0] && q.along < 0.1 && w.x * L.n.x + w.z * L.n.z > 0.5) {
+        this.holdLadder(L);
         return true;
+      }
+      // on the roof, stepping into the open hatch (before you drop through it)
+      const [a0, a1] = L.hatchAlong;
+      if (Math.abs(this.pos.y - L.roof) < 0.3 && L.open() && Math.abs(q.across) < L.hatchHalf + 0.15
+        && q.along > a0 - 0.15 && q.along < a1 + 0.15) {
+        const mid = (a0 + a1) / 2;
+        const tx = L.stand.x + L.n.x * mid - this.pos.x, tz = L.stand.z + L.n.z * mid - this.pos.z;
+        if (w.x * tx + w.z * tz > 0) {
+          this.climbDown(L);
+          return true;
+        }
       }
     }
     return false;
   }
 
-  // Way up that does not cut through rails and slabs: step out from under a ceiling first,
-  // then rise above whatever is between us and the target, move over and settle down on it.
-  climbPath(target, fx, fz, cols) {
-    const p = this.pos.clone();
-    const pts = [p];
-    const top = target.y + STAND_H * 0.6;
-    let a = p;
-    if (!columnFree(cols, p.x, p.z, p.y + 0.2, top)) {
-      // ahead, back, then to the sides: from a balcony that is out over the rail
-      let out = null;
-      for (let o = 0.3; o <= 2.0 && !out; o += 0.15) {
-        for (const [dx, dz] of [[fx, fz], [-fx, -fz], [-fz, fx], [fz, -fx]]) {
-          const q = new THREE.Vector3(p.x + dx * o, p.y, p.z + dz * o);
-          if (columnFree(cols, q.x, q.z, p.y + 0.5, top)) { out = q; break; }
-        }
-      }
-      if (!out) return null;
-      const h0 = Math.min(highest(cols, p, out, p.y, p.y + 1.3), p.y + 1.3) + 0.05;
-      // out over a rail is fine, out through a wall is not
-      if (!segmentFree(cols, p, out, h0 + 0.05, h0 + 0.6)) return null;
-      pts.push(new THREE.Vector3(p.x, h0, p.z), new THREE.Vector3(out.x, h0, out.z));
-      a = new THREE.Vector3(out.x, h0, out.z);
-    }
-    const h = highest(cols, a, target, target.y - 0.01, target.y + 1.3) + 0.05;
-    if (h > this.pos.y + CLIMB.reach + 1.4) return null;
-    if (!segmentFree(cols, a, target, h + 0.05, h + 0.6)) return null;
-    pts.push(new THREE.Vector3(a.x, h, a.z), new THREE.Vector3(target.x, h, target.z), target);
-    return pts;
+  holdLadder(L, snap = 0) {
+    this.ladder = { L, snap, from: this.pos.clone() };
+    this.vel.set(0, 0, 0);
+    this.climbVel = 0;
+    this.onGround = false;
+    this.sprint = false;
+    this.crouch = this.wantCrouch = false;
+    this.flying = false;
   }
 
-  updateClimb(dt) {
-    const c = this.climb;
-    c.t += dt * CLIMB.speed;
-    let d = Math.min(c.t, c.len);
-    let i = 1;
-    while (i < c.path.length - 1 && d > c.path[i].distanceTo(c.path[i - 1])) {
-      d -= c.path[i].distanceTo(c.path[i - 1]);
-      i++;
-    }
-    const a = c.path[i - 1], b = c.path[i];
-    const seg = a.distanceTo(b);
-    this.pos.lerpVectors(a, b, seg > 1e-5 ? Math.min(1, d / seg) : 1);
+  letGo(onGround) {
+    this.ladder = null;
+    this.climbVel = 0;
+    this.onGround = onGround;
+  }
+
+  updateLadder(dt, input) {
+    const c = this.ladder, L = c.L;
+    c.snap = Math.min(1, c.snap + dt / LADDER.snap);
+    const k = c.snap * c.snap * (3 - 2 * c.snap);
+    this.height += (STAND_H - this.height) * Math.min(1, dt * 12);
+    this.facing = Math.atan2(L.n.x, L.n.z);
     this.speed = 0;
-    this.gait = 'air';
-    if (c.t >= c.len) {
-      this.pos.copy(c.path[c.path.length - 1]);
-      this.climb = null;
-      this.onGround = true;
-      this.vel.set(0, 0, 0);
-      if (c.crouch) { this.crouch = true; this.wantCrouch = true; }
-      this.landed = 0.25;
+    this.gait = 'ladder';
+    // Space: let go, pushing yourself back off the rungs
+    if (input.hit('Space')) {
+      this.letGo(false);
+      this.vel.set(-L.n.x * 1.6, 2.2, -L.n.z * 1.6);
+      return;
     }
+    let dir = (input.down('KeyW', 'ArrowUp') ? 1 : 0) - (input.down('KeyS', 'ArrowDown') ? 1 : 0);
+    if (this.camPitch < LADDER.lookDown) dir = -dir;
+    const v = dir * (dir > 0 ? LADDER.up : LADDER.down);
+    this.climbVel += (v - this.climbVel) * Math.min(1, dt * 8);
+    let y = this.pos.y + this.climbVel * dt * k;
+    const open = L.open();
+    if (open && dir > 0 && y >= L.roof - LADDER.out) {
+      this.climbOut(L);
+      return;
+    }
+    // under a closed lid your head stops at the ceiling
+    if (!open) y = Math.min(y, L.ceil - STAND_H - 0.02);
+    if (y <= L.y0) {
+      y = L.y0;
+      if (dir < 0) {
+        this.pos.y = y;
+        this.letGo(true);
+        return;
+      }
+    }
+    this.climbed += Math.abs(y - this.pos.y);
+    this.pos.set(c.from.x + (L.stand.x - c.from.x) * k, y, c.from.z + (L.stand.z - c.from.z) * k);
+  }
+
+  // Pull yourself out through the hatch: up with the hands on the edge, crouched, over the kerb, stand up on the roof
+  climbOut(L) {
+    const up = L.roof + 0.25;
+    const at = (d, y) => new THREE.Vector3(L.stand.x + L.n.x * d, y, L.stand.z + L.n.z * d);
+    const out = L.hatchAlong[1] + 0.55;
+    this.letGo(false);
+    this.startScene([
+      { to: at(0, up), h: CROUCH_H, dur: 1.3 },
+      { to: at(out, up), h: CROUCH_H, dur: 0.8 },
+      { to: at(out, L.roof), h: STAND_H, dur: 0.45 },
+    ], () => { this.onGround = true; this.landed = 0.2; }, Math.atan2(L.n.x, L.n.z));
+  }
+
+  // From the roof into the hatch: over it, turn around to face the rungs, down onto the ladder
+  climbDown(L) {
+    const above = new THREE.Vector3(L.stand.x, L.roof + 0.25, L.stand.z);
+    const yaw = Math.atan2(-L.n.x, -L.n.z);
+    const d = Math.hypot(above.x - this.pos.x, above.z - this.pos.z);
+    this.vel.set(0, 0, 0);
+    this.sprint = false;
+    this.startScene([
+      { to: above, h: CROUCH_H, dur: 0.5 + d * 0.6, yaw },
+      { to: new THREE.Vector3(L.stand.x, L.roof - LADDER.out - 0.2, L.stand.z), h: STAND_H, dur: 1.2 },
+    ], () => this.holdLadder(L, 1), Math.atan2(L.n.x, L.n.z));
+  }
+
+  startScene(segs, done, facing) {
+    this.scene = { segs, i: 0, t: 0, done, from: this.pos.clone(), h0: this.height, yaw0: this.camYaw };
+    this.facing = facing;
+    this.onGround = false;
+    this.crouch = this.wantCrouch = false;
+  }
+
+  updateScene(dt) {
+    const s = this.scene, g = s.segs[s.i];
+    s.t = Math.min(1, s.t + dt / g.dur);
+    const e = s.t * s.t * (3 - 2 * s.t);
+    const prevY = this.pos.y;
+    this.pos.lerpVectors(s.from, g.to, e);
+    this.height = s.h0 + (g.h - s.h0) * e;
+    if (g.yaw !== undefined) {
+      const d = Math.atan2(Math.sin(g.yaw - s.yaw0), Math.cos(g.yaw - s.yaw0));
+      this.camYaw = s.yaw0 + d * e;
+    }
+    this.climbed += Math.abs(this.pos.y - prevY);
+    this.speed = 0;
+    this.gait = 'scene';
+    if (s.t < 1) return;
+    s.i++;
+    s.t = 0;
+    s.from = this.pos.clone();
+    s.h0 = this.height;
+    s.yaw0 = this.camYaw;
+    if (s.i < s.segs.length) return;
+    this.scene = null;
+    this.vel.set(0, 0, 0);
+    s.done();
   }
 
   canStand() {
@@ -391,6 +465,11 @@ export class Player {
         const ph = this.distance * (this.speed > 4 ? 1.35 : 1.75);
         bobY = Math.abs(Math.sin(ph)) * 0.05 * Math.min(1, this.speed / 3);
         bobX = Math.cos(ph) * 0.025 * Math.min(1, this.speed / 3);
+      } else if (s.headBob && (this.ladder || this.scene)) {
+        // a hand over hand rhythm, rung by rung
+        const ph = this.climbed / LADDER.rung * Math.PI;
+        bobY = Math.sin(ph) * 0.02;
+        bobX = Math.sin(ph * 0.5) * 0.03;
       }
       const right = new THREE.Vector3(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw));
       this.camPos.set(p.x, p.y + eye + bobY, p.z).addScaledVector(right, bobX);
@@ -421,33 +500,4 @@ export class Player {
     this.camLook.copy(pivot).addScaledVector(dir, -2);
     this.camLook.y += 0.1;
   }
-}
-
-// no collider in a thin vertical column between y0 and y1
-function columnFree(cols, x, z, y0, y1) {
-  const r = RADIUS * 0.8;
-  return !cols.some((b) => x + r > b.min.x && x - r < b.max.x && z + r > b.min.z && z - r < b.max.z && b.max.y > y0 && b.min.y < y1);
-}
-
-// nothing between the heights y0 and y1 along the segment a-b (seen from above)
-function segmentFree(cols, a, b, y0, y1) {
-  const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 0.1));
-  for (let i = 0; i <= n; i++) {
-    if (!columnFree(cols, a.x + (b.x - a.x) * i / n, a.z + (b.z - a.z) * i / n, y0, y1)) return false;
-  }
-  return true;
-}
-
-// highest top of the colliders along a segment, counting only tops between lo and hi
-function highest(cols, a, b, lo, hi) {
-  let h = lo;
-  const n = Math.max(2, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 0.1));
-  for (let i = 0; i <= n; i++) {
-    const x = a.x + (b.x - a.x) * i / n, z = a.z + (b.z - a.z) * i / n;
-    for (const c of cols) {
-      if (x + RADIUS * 0.6 < c.min.x || x - RADIUS * 0.6 > c.max.x || z + RADIUS * 0.6 < c.min.z || z - RADIUS * 0.6 > c.max.z) continue;
-      if (c.max.y > h && c.max.y <= hi) h = c.max.y;
-    }
-  }
-  return h;
 }

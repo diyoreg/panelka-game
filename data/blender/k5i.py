@@ -1,6 +1,8 @@
-"""Khrushchyovka with interiors: colliders of the structure, the inside of a section, furniture and door leaves.
+"""Panel blocks with interiors: colliders of the structure, the inside of a section, furniture and door leaves.
 
-build_panelka.py calls init(Mesh) and then the build functions. The plan is in k5i_plan.py.
+build_panelka.py calls init(Mesh), use(plan) and then the build functions. Plans: k5i_plan.py (the khrushchyovka)
+and k9i_plan.py (the nine-storey with a lift); use() switches every plan constant below to that plan, so the same
+code builds both. Asset names start with the plan's NAME (k5i_shell, k9i_shell ...).
 Every asset here is drawn in section coordinates (Blender: x = plan x, y = plan y - D / 2, z up):
     k5i_shell          walls, floors, ceilings, stairs, windows from the inside: all floors of one section
     k5i_<apt>_<style>  furniture and lamps of one apartment, z from its floor (the game lifts it per floor)
@@ -9,17 +11,58 @@ Every asset here is drawn in section coordinates (Blender: x = plan x, y = plan 
 import math
 import random
 
+import k5i_plan
 from k5i_plan import (W, D, T, END, PL, FH, FLOORS, SLAB, CEIL, DOOR_H, ROOF, M, ROOMS, WALLS, DOORS, DOOR_LEAF,
                       FRAME, BAL_DOOR_TOP,
                       SWITCHES, SWITCH_Z, WINDOWS, STAIR_WINDOW, LANE_A, LANE_B, STAIR_X, Y_MID, Y_FL, RISE, TREAD,
-                      VEST_Z, ENTRANCE, HATCH)
+                      VEST_Z, ENTRANCE, HATCH, LADDER)
 
 Mesh = None
+PLAN = k5i_plan
+PREFIX = 'k5i'
+# plan constants that use() swaps
+_PLAN_NAMES = ('W', 'D', 'T', 'END', 'PL', 'FH', 'FLOORS', 'SLAB', 'CEIL', 'DOOR_H', 'ROOF', 'M', 'ROOMS', 'WALLS',
+               'DOORS', 'DOOR_LEAF', 'FRAME', 'BAL_DOOR_TOP', 'SWITCHES', 'SWITCH_Z', 'WINDOWS', 'STAIR_WINDOW',
+               'LANE_A', 'LANE_B', 'STAIR_X', 'Y_MID', 'Y_FL', 'RISE', 'TREAD', 'VEST_Z', 'ENTRANCE', 'HATCH',
+               'LADDER', 'XC', 'Y_LAND', 'SLAB_HOLES', 'SOLIDS', 'PANEL', 'SOCKETS', 'ELEVATOR')
 
 
 def init(mesh_cls):
     global Mesh
     Mesh = mesh_cls
+
+
+def use(plan):
+    """Build the next assets for this plan (a module like k5i_plan)."""
+    global PLAN, PREFIX
+    PLAN, PREFIX = plan, plan.NAME
+    g = globals()
+    for n in _PLAN_NAMES:
+        g[n] = getattr(plan, n)
+
+
+def rect_minus(r, holes):
+    """Rectangle (x0, y0, x1, y1) minus the holes, as a list of rectangles."""
+    xs = sorted({r[0], r[2], *[min(max(h[0], r[0]), r[2]) for h in holes], *[min(max(h[2], r[0]), r[2]) for h in holes]})
+    ys = sorted({r[1], r[3], *[min(max(h[1], r[1]), r[3]) for h in holes], *[min(max(h[3], r[1]), r[3]) for h in holes]})
+    out = []
+    for i in range(len(xs) - 1):
+        run = None
+        for j in range(len(ys) - 1):
+            cx, cy = (xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2
+            solid = xs[i + 1] - xs[i] > 1e-4 and ys[j + 1] - ys[j] > 1e-4 and \
+                not any(h[0] < cx < h[2] and h[1] < cy < h[3] for h in holes)
+            if solid:
+                run = (run[0] if run else ys[j], ys[j + 1])
+            if (not solid or j == len(ys) - 2) and run:
+                out.append((xs[i], run[0], xs[i + 1], run[1]))
+                run = None
+    return out
+
+
+def facade_doors(side):
+    """Balcony doors in the facade on this side ('front' or 'back')."""
+    return [d for d in DOORS if d['wall'] == side]
 
 
 def by(y):
@@ -70,10 +113,10 @@ def wall_rect(w, a0, a1):
 def solid_at(x, y, z=0.3):
     """Is there a wall (not a door hole) at this plan point, z above the floor."""
     if x < 0.08 or x > W - 0.08 or y < T or y > D - T:
-        if y > D - T:
-            for d in DOORS:
-                if d['wall'] == 'back' and d['a0'] < x < d['a1']:
-                    return False
+        side = 'back' if y > D - T else 'front' if y < T else None
+        for d in facade_doors(side) if side else []:
+            if d['a0'] < x < d['a1']:
+                return False
         return True
     for w in WALLS:
         x0, y0, x1, y1 = wall_rect(w, w[3], w[4])
@@ -99,29 +142,33 @@ def structure_cols(m, ox, first, last):
             for a0, a1, z0, z1 in wall_pieces(w, zb, zf, zf + FH):
                 x0, y0, x1, y1 = wall_rect(w, a0, a1)
                 c(x0, y0, z0, x1, y1, z1)
-        # floor slab (the basement is solid), the stairwell is open
+        # floor slab (the basement is solid), the stairwell (and the lift shaft) open
         zs = 0.0 if f == 0 else zf - SLAB
-        c(0, 0, zs, 6.33, D, zf)
-        c(9.67, 0, zs, W, D, zf)
-        c(6.33, 5.53, zs, 9.67, D, zf)
-        # back wall: gaps for the balcony doors
-        xs = [0.0]
-        for d in DOORS:
-            if d['wall'] == 'back':
+        for (x0, y0, x1, y1) in rect_minus((0.0, 0.0, W, D), SLAB_HOLES):
+            c(x0, y0, zs, x1, y1, zf)
+        for (x0, y0, x1, y1) in SOLIDS:
+            c(x0, y0, zb, x1, y1, zf + FH)
+        # facades: gaps for the balcony doors, and on the ground floor the entrance
+        for side, t0, t1 in (('front', 0.0, T), ('back', D - T, D)):
+            xs = [0.0]
+            for d in facade_doors(side):
                 xs += [d['a0'], d['a1']]
-        xs.append(W)
-        for i in range(0, len(xs), 2):
-            c(xs[i], D - T, zb, xs[i + 1], D, zf + FH)
-        for i in range(1, len(xs) - 1, 2):
-            c(xs[i], D - T, zf + 2.25, xs[i + 1], D, zf + FH)
-            if f == 0:
-                c(xs[i], D - T, 0, xs[i + 1], D, zf)
-    # front wall: the entrance is the only way through
-    e0, e1, ez0, ez1 = ENTRANCE
-    c(0, 0, 0, e0, T, ROOF)
-    c(e1, 0, 0, W, T, ROOF)
-    c(e0, 0, 0, e1, T, ez0)
-    c(e0, 0, ez1, e1, T, ROOF)
+            xs.append(W)
+            for i in range(0, len(xs), 2):
+                if side == 'front' and f == 0:
+                    e0, e1, ez0, ez1 = ENTRANCE
+                    for (a, b) in ((xs[i], min(xs[i + 1], e0)), (max(xs[i], e1), xs[i + 1])):
+                        if b > a:
+                            c(a, t0, zb, b, t1, zf + FH)
+                    if xs[i] < e0 and xs[i + 1] > e1:
+                        c(e0, t0, 0.0, e1, t1, ez0)
+                        c(e0, t0, ez1, e1, t1, zf + FH)
+                    continue
+                c(xs[i], t0, zb, xs[i + 1], t1, zf + FH)
+            for i in range(1, len(xs) - 1, 2):
+                c(xs[i], t0, zf + 2.25, xs[i + 1], t1, zf + FH)
+                if f == 0:
+                    c(xs[i], t0, 0, xs[i + 1], t1, zf)
     if first:
         c(-END, 0, 0, 0.0, D, ROOF)
     if last:
@@ -154,7 +201,7 @@ def stair_cols():
         out.append((xb0, 2.69 + (k - 1) * TREAD, 0, xb1, 2.69 + k * TREAD, top))
     for f in range(FLOORS):
         zf = floor_z(f)
-        out.append((x0, Y_FL, zf - 0.2 if f else 0.0, x1, 5.53, zf))
+        out.append((x0, Y_FL, zf - 0.2 if f else 0.0, x1, Y_LAND, zf))
         if f == FLOORS - 1:
             # top landing: rail over the drop into the flights below
             out.append((xa0, Y_FL - 0.05, zf, xa1 + 0.13, Y_FL + 0.01, zf + 1.0))
@@ -179,9 +226,9 @@ def windows_of_floor(f):
     """(side, x0, x1, z0, z1, kind) with absolute z: windows and balcony doors of floor f."""
     zf = floor_z(f)
     out = [(s, x0, x1, zf + z0, zf + z1, 'win') for (s, x0, x1, z0, z1, room) in WINDOWS]
-    for d in DOORS:
-        if d['wall'] == 'back':
-            out.append(('back', d['a0'], d['a1'], zf + d.get('z0', 0.0), zf + BAL_DOOR_TOP, 'door'))
+    for side in ('front', 'back'):
+        for d in facade_doors(side):
+            out.append((side, d['a0'], d['a1'], zf + d.get('z0', 0.0), zf + BAL_DOOR_TOP, 'door'))
     if f < FLOORS - 1:
         x0, x1, z0, z1 = STAIR_WINDOW
         out.append(('front', x0, x1, zf + z0, zf + z1, 'stair'))
@@ -206,9 +253,9 @@ def holed_slab(m, axis, t0, t1, a0, a1, z0, z1, holes, mat):
                 run = (run[0] if run else ua, ub)
             if (not solid or i == len(us) - 2) and run:
                 if axis == 'Y':
-                    pbox(m, run[0], t0, za, run[1], t1, zb, mat)
+                    pbox(m, run[0], t0, za, run[1], t1, zb, mat, bottom=mat)
                 else:
-                    pbox(m, t0, run[0], za, t1, run[1], zb, mat)
+                    pbox(m, t0, run[0], za, t1, run[1], zb, mat, bottom=mat)
                 run = None
 
 
@@ -222,7 +269,7 @@ def window_inside(m, side, x0, x1, z0, z1, kind, rnd):
     yi = T if side == 'front' else D - T          # inner face of the wall
     fw = 0.06
     def fb(a0, a1, za, zb, d0=0.0, d1=0.07, mat='pk_frame_int'):
-        pbox(m, a0, yg + inward * d0, za, a1, yg + inward * d1, zb, mat)
+        pbox(m, a0, yg + inward * d0, za, a1, yg + inward * d1, zb, mat, bottom=mat)
     # outer frame
     fb(x0, x1, z0, z0 + fw)
     fb(x0, x1, z1 - fw, z1)
@@ -250,11 +297,12 @@ def window_inside(m, side, x0, x1, z0, z1, kind, rnd):
             radiator(m, (x0 + x1) / 2, yi, inward, sz - 0.1, min(1.0, (x1 - x0) - 0.4))
     # reveal linings so the wall cut looks plastered
     for (a0, a1, za, zb) in ((x0 - 0.02, x0, z0, z1), (x1, x1 + 0.02, z0, z1), (x0 - 0.02, x1 + 0.02, z1, z1 + 0.02)):
-        pbox(m, a0, yg, za, a1, yi + inward * 0.005, zb, 'pk_casing')
+        pbox(m, a0, yg, za, a1, yi + inward * 0.005, zb, 'pk_casing', bottom='pk_casing')
 
 
-def radiator(m, xc, yi, inward, top, width):
-    """Cast iron radiator: sections side by side, two pipes going down to the floor."""
+def radiator(m, xc, yi, inward, top, width, riser=True):
+    """Cast iron radiator: sections side by side, two pipes going down to the floor.
+    riser: one of them goes on up through the ceiling (in the flats; in the stairwell it would end in the air)."""
     n = max(4, int(width / 0.09))
     z0 = top - 0.55
     for i in range(n):
@@ -263,7 +311,8 @@ def radiator(m, xc, yi, inward, top, width):
     pbox(m, xc - width / 2, yi + inward * 0.08, z0 + 0.05, xc + width / 2, yi + inward * 0.12, top - 0.05, 'pk_radiator')
     for s in (-1, 1):
         x = xc + s * (width / 2 + 0.08)
-        m.cyl(x, by(yi + inward * 0.07), z0 - 0.4 if s < 0 else z0, top + 2.4 if s < 0 else top, 0.016, 6, 'pk_radiator')
+        up = s < 0 and riser
+        m.cyl(x, by(yi + inward * 0.07), z0 - 0.4 if up else z0, top + 2.4 if up else top, 0.016, 6, 'pk_radiator')
 
 
 def baseboards(m, zf):
@@ -314,14 +363,35 @@ def door_frame(b, h0, h1, t0, t1, z0, z1, side, leaf_t):
     b(h0 + j, h1 - j, s0, s1, z1 - j - 0.012, z1 - j)
 
 
+def opening_trim(m, w, h0, h1, zf):
+    """An opening without a door (the lift doorway on the landings): casings on both faces, a lining inside."""
+    kind, t0, t1 = w[0], w[1], w[2]
+    lift = ELEVATOR and kind == 'Y' and abs(h0 - ELEVATOR['door'][0]) < 1e-6
+    mat = 'pk_lift_frame' if lift else 'pk_casing'
+    def b(a0, a1, s0, s1, z0, z1):
+        if kind == 'X':
+            pbox(m, s0, a0, z0, s1, a1, z1, mat, bottom=mat)
+        else:
+            pbox(m, a0, s0, z0, a1, s1, z1, mat, bottom=mat)
+    top = zf + DOOR_H
+    b(h0, h0 + 0.02, t0, t1, zf, top)
+    b(h1 - 0.02, h1, t0, t1, zf, top)
+    b(h0, h1, t0, t1, top - 0.02, top)
+    for s0, s1 in ((t0 - 0.012, t0), (t1, t1 + 0.012)):
+        b(h0 - 0.07, h0, s0, s1, zf, top + 0.07)
+        b(h1, h1 + 0.07, s0, s1, zf, top + 0.07)
+        b(h0 - 0.07, h1 + 0.07, s0, s1, top, top + 0.07)
+    b(h0, h1, t0, t1, zf, zf + 0.012)
+
+
 def door_trim(m, w, h0, h1, zf, d):
     """Frame inside a door opening, casings on both faces, threshold."""
     kind, t0, t1 = w[0], w[1], w[2]
     def b(a0, a1, s0, s1, z0, z1):
         if kind == 'X':
-            pbox(m, s0, a0, z0, s1, a1, z1, 'pk_casing')
+            pbox(m, s0, a0, z0, s1, a1, z1, 'pk_casing', bottom='pk_casing')
         else:
-            pbox(m, a0, s0, z0, a1, s1, z1, 'pk_casing')
+            pbox(m, a0, s0, z0, a1, s1, z1, 'pk_casing', bottom='pk_casing')
     door_frame(b, h0, h1, t0, t1, zf, zf + DOOR_H, d['side'], DOOR_LEAF[d['kind']][2])
     for s0, s1 in ((t0 - 0.012, t0), (t1, t1 + 0.012)):
         b(h0 - 0.06, h0, s0, s1, zf, zf + DOOR_H + 0.06)
@@ -331,20 +401,28 @@ def door_trim(m, w, h0, h1, zf, d):
     b(h0, h1, t0, t1, zf, zf + 0.012)
 
 
-def build_shell():
-    m = Mesh('k5i_shell', 'interior')
+def build_shell(extra=None):
+    m = Mesh(PREFIX + '_shell', 'interior')
     rnd = random.Random(5)
     for f in range(FLOORS):
         zf = floor_z(f)
         zb = 0.0 if f == 0 else zf
+        # the top floor ends under the roof slab: up to its top the walls would show through the snow on the roof
+        zt = zf + FH if f < FLOORS - 1 else ROOF - SLAB
         for wi, w in enumerate(WALLS):
-            for a0, a1, z0, z1 in wall_pieces(w, zb, zf, zf + FH):
+            for a0, a1, z0, z1 in wall_pieces(w, zb, zf, zt):
                 x0, y0, x1, y1 = wall_rect(w, a0, a1)
-                pbox(m, x0, y0, z0, x1, y1, z1, 'pk_wall_int')
+                # boxes have no bottom face unless asked: the piece over a door hole needs one
+                pbox(m, x0, y0, z0, x1, y1, z1, 'pk_wall_int', bottom='pk_wall_int' if z0 > zb + 0.01 else None)
             for h0, h1 in w[5]:
-                door_trim(m, w, h0, h1, zf, next(d for d in DOORS if d['wall'] == wi and d['a0'] == h0))
+                d = next((d for d in DOORS if d['wall'] == wi and d['a0'] == h0), None)
+                if d:
+                    door_trim(m, w, h0, h1, zf, d)
+                else:
+                    opening_trim(m, w, h0, h1, zf)
         for r in ROOMS:
-            if r['kind'] == 0:
+            # the stairwell has its own landings, the lift cab is drawn by the game
+            if r['kind'] in (0, 5):
                 continue
             for (x0, y0, x1, y1) in r['boxes']:
                 pquad(m, [(x0, y0, zf), (x1, y0, zf), (x1, y1, zf), (x0, y1, zf)], 'pk_floor_int', (0, 0, 1))
@@ -358,14 +436,16 @@ def build_shell():
         baseboards(m, zf)
         for (side, x0, x1, z0, z1, kind) in windows_of_floor(f):
             window_inside(m, side, x0, x1, z0, z1, kind, rnd)
-        for d in DOORS:
-            if d['wall'] == 'back':
+        for side in ('front', 'back'):
+            # inner face of the facade, the casing on it, the frame between the inner face and the glass plane
+            yi, ci, (t0, t1) = (D - T, -0.012, (D - T, D - T + 0.15)) if side == 'back' else (T, 0.012, (T - 0.15, T))
+            for d in facade_doors(side):
                 top = zf + BAL_DOOR_TOP
                 for (a0, a1, za, zb_) in ((d['a0'] - 0.06, d['a0'], zf, top + 0.06), (d['a1'], d['a1'] + 0.06, zf, top + 0.06),
                                          (d['a0'] - 0.06, d['a1'] + 0.06, top, top + 0.06)):
-                    pbox(m, a0, D - T - 0.012, za, a1, D - T, zb_, 'pk_casing')
-                door_frame(lambda a0, a1, s0, s1, z0, z1: pbox(m, a0, s0, z0, a1, s1, z1, 'pk_frame_int'),
-                           d['a0'], d['a1'], D - T, D - T + 0.15, zf + d.get('z0', 0.0), top, d['side'], DOOR_LEAF['bal'][2])
+                    pbox(m, a0, yi + ci, za, a1, yi, zb_, 'pk_casing', bottom='pk_casing')
+                door_frame(lambda a0, a1, s0, s1, z0, z1: pbox(m, a0, s0, z0, a1, s1, z1, 'pk_frame_int', bottom='pk_frame_int'),
+                           d['a0'], d['a1'], t0, t1, zf + d.get('z0', 0.0), top, d['side'], DOOR_LEAF['bal'][2])
         for (room, x, y, nx, ny) in SWITCHES:
             switch(m, x, y, zf + SWITCH_Z, nx, ny)
         sockets(m, zf, rnd)
@@ -381,12 +461,14 @@ def build_shell():
     holed_slab(m, 'Y', D - T, D - T + 0.15, 0.0, W, PL, ROOF - SLAB, holes_b, 'pk_wall_int')
     # entrance: jambs, transom frame
     for (a0, a1, za, zb_) in ((e0 - 0.02, e0, ez0, ez1 + 0.35), (e1, e1 + 0.02, ez0, ez1 + 0.35)):
-        pbox(m, a0, 0.0, za, a1, T, zb_, 'pk_casing')
-    door_frame(lambda a0, a1, s0, s1, z0, z1: pbox(m, a0, s0, z0, a1, s1, z1, 'pk_metal'),
+        pbox(m, a0, 0.0, za, a1, T, zb_, 'pk_casing', bottom='pk_casing')
+    door_frame(lambda a0, a1, s0, s1, z0, z1: pbox(m, a0, s0, z0, a1, s1, z1, 'pk_metal', bottom='pk_metal'),
                e0, e1, 0.0, T, ez0, ez1, -1, DOOR_LEAF['entr'][2])
     pbox(m, e0, T - 0.15, ez1, e1, T - 0.08, ez1 + 0.05, 'pk_frame_int')
     pquad(m, [(e0, T - 0.12, ez1 + 0.05), (e1, T - 0.12, ez1 + 0.05), (e1, T - 0.12, ez1 + 0.33), (e0, T - 0.12, ez1 + 0.33)], 'pk_glass_int', (0, 1, 0))
     stair_common(m, rnd)
+    if extra:
+        extra(m)
     return m.finish()
 
 
@@ -399,11 +481,6 @@ def switch(m, x, y, z, nx, ny):
     else:
         pbox(m, x - w / 2, y, z - h / 2, x + w / 2, y + ny * d, z + h / 2, 'pk_switch')
         pbox(m, x - 0.015, y + ny * d, z - 0.022, x + 0.015, y + ny * (d + 0.008), z + 0.022, 'pk_switch_key')
-
-
-SOCKETS = [(1, 3.27, 1.7, 1, 0, 1.1), (4, 6.33, 7.0, -1, 0, 0.3), (4, 3.27, 9.6, 1, 0, 0.3), (5, 0.08, 9.4, 1, 0, 0.3),
-           (6, 0.08, 1.0, 1, 0, 0.3), (7, 12.73, 1.7, -1, 0, 1.1), (10, 15.92, 1.2, -1, 0, 0.3), (10, 12.87, 3.95, 1, 0, 0.3),
-           (11, 15.92, 9.6, -1, 0, 0.3), (14, 6.47, 10.4, 1, 0, 1.1), (15, 12.73, 9.6, -1, 0, 0.3), (15, 9.67, 10.3, 1, 0, 0.3)]
 
 
 def sockets(m, zf, rnd):
@@ -449,28 +526,41 @@ def stair_floor(m, f):
     xa0, xa1 = LANE_A
     xb0, xb1 = LANE_B
     x0, x1 = STAIR_X
-    # floor landing: tiles on top, whitewash underneath
-    pbox(m, x0, Y_FL, zf - 0.2, x1, 5.53, zf, 'pk_stair_side', 'pk_floor_int', 'pk_ceil_int')
+    # floor landing: tiles on top, whitewash underneath; the first one is solid down to the ground (as its collider),
+    # otherwise the gap between the flights looks under it at the snow
+    pbox(m, x0, Y_FL, 0.0 if f == 0 else zf - 0.2, x1, Y_LAND, zf, 'pk_stair_side', 'pk_floor_int', 'pk_ceil_int')
     # bulb under the landing above (or the roof)
     zc = zf + FH - 0.2 if f < FLOORS - 1 else ROOF - SLAB
-    m.cyl(8.0, by(4.67), zc - 0.12, zc, 0.006, 4, 'pk_rail')
-    m.cyl(8.0, by(4.67), zc - 0.2, zc - 0.12, 0.035, 8, 'pk_lampshade', r1=0.025)
-    # electric panel and door bells
-    pbox(m, 6.75, 5.53 - 0.07, zf + 1.35, 7.3, 5.53, zf + 2.05, 'pk_metal_green', 'pk_metal_green')
-    pbox(m, 7.22, 5.53 - 0.075, zf + 1.65, 7.26, 5.53 - 0.07, zf + 1.75, 'pk_rail')
-    for (x, y, nx, ny) in ((6.47, 5.42, 1, 0), (9.53, 5.42, -1, 0), (8.65, 5.53, 0, -1)):
-        if nx:
-            pbox(m, x, y - 0.03, zf + 1.45, x + nx * 0.02, y + 0.03, zf + 1.53, 'pk_switch')
+    yl = (Y_FL + Y_LAND) / 2
+    m.cyl(XC, by(yl), zc - 0.12, zc, 0.006, 4, 'pk_rail')
+    m.cyl(XC, by(yl), zc - 0.2, zc - 0.12, 0.035, 8, 'pk_lampshade', r1=0.025)
+    # electric panel
+    ax, p0, p1, face, n = PANEL
+    if ax == 'Y':
+        pbox(m, p0, face + n * 0.07, zf + 1.35, p1, face, zf + 2.05, 'pk_metal_green', 'pk_metal_green')
+        pbox(m, p1 - 0.08, face + n * 0.075, zf + 1.65, p1 - 0.04, face + n * 0.07, zf + 1.75, 'pk_rail')
+    else:
+        pbox(m, face + n * 0.07, p0, zf + 1.35, face, p1, zf + 2.05, 'pk_metal_green', 'pk_metal_green')
+        pbox(m, face + n * 0.075, p1 - 0.08, zf + 1.65, face + n * 0.07, p1 - 0.04, zf + 1.75, 'pk_rail')
+    # a bell by every flat door and a mat in front of it
+    for (ax, face, n, a0, a1) in landing_doors():
+        a = a1 + 0.11 if landing_span(ax)[0] < a1 + 0.14 < landing_span(ax)[1] else a0 - 0.11
+        if ax == 'X':
+            pbox(m, face, a - 0.03, zf + 1.45, face + n * 0.02, a + 0.03, zf + 1.53, 'pk_switch')
+            pbox(m, face + n * 0.03, a0 + 0.05, zf, face + n * 0.53, a1 - 0.05, zf + 0.012, 'pk_mat')
         else:
-            pbox(m, x - 0.03, y, zf + 1.45, x + 0.03, y + ny * 0.02, zf + 1.53, 'pk_switch')
-    # door mats
-    for (mx0, my0, mx1, my1) in ((6.5, 4.4, 7.0, 5.25), (9.0, 4.4, 9.5, 5.25), (7.65, 5.05, 8.5, 5.5)):
-        pbox(m, mx0, my0, zf, mx1, my1, zf + 0.012, 'pk_mat')
+            pbox(m, a - 0.03, face, zf + 1.45, a + 0.03, face + n * 0.02, zf + 1.53, 'pk_switch')
+            pbox(m, a0 + 0.05, face + n * 0.03, zf, a1 - 0.05, face + n * 0.48, zf + 0.012, 'pk_mat')
     if f == FLOORS - 1:
+        # across the whole edge, from the wall to the rail of the flight coming up
+        xr = xb0 - 0.01
         for i in range(8):
-            x = xa0 + 0.05 + i * (xa1 + 0.1 - xa0) / 7
-            pbox(m, x - 0.01, Y_FL - 0.03, zf, x + 0.01, Y_FL - 0.01, zf + 0.9, 'pk_rail')
-        m.tube((xa0, by(Y_FL - 0.02), zf + 0.92), (xa1 + 0.1, by(Y_FL - 0.02), zf + 0.92), 0.03, 0.03, 'pk_handrail', 6)
+            x = xa0 + 0.05 + i * (xr - 0.05 - xa0 - 0.05) / 7
+            # on the slab, by its edge
+            pbox(m, x - 0.01, Y_FL + 0.01, zf, x + 0.01, Y_FL + 0.03, zf + 0.9, 'pk_rail')
+        m.tube((xa0, by(Y_FL + 0.02), zf + 0.92), (xr, by(Y_FL + 0.02), zf + 0.92), 0.03, 0.03, 'pk_handrail', 6)
+        # the handrail of the flight ends lower: it turns up to meet this one
+        m.tube((xr, by(Y_FL), zf - RISE + 0.92), (xr, by(Y_FL + 0.02), zf + 0.92), 0.03, 0.03, 'pk_handrail', 6)
         return
     zm = zf + 8 * RISE
     flight(m, xa0, xa1, Y_FL, -1, zf, 7, base=(VEST_Z if f == 0 else None))
@@ -479,7 +569,28 @@ def stair_floor(m, f):
     railing(m, xa1 + 0.01, Y_FL, zf, Y_MID, zm - RISE, 7)
     railing(m, xb0 - 0.01, Y_MID, zm, Y_FL, zf + FH - RISE, 7)
     # radiator on the half landing under the window
-    radiator(m, 8.0, T, 1, zm + 0.75, 1.0)
+    radiator(m, XC, T, 1, zm + 0.75, 1.0, riser=False)
+
+
+def landing_span(ax):
+    """The floor landing along a wall of this axis: plan y for X walls, plan x for Y walls."""
+    return (Y_FL, Y_LAND) if ax == 'X' else STAIR_X
+
+
+def landing_doors():
+    """Flat doors on the floor landing: (wall axis, landing face of the wall, normal into the landing, a0, a1)."""
+    out = []
+    yc = (Y_FL + Y_LAND) / 2
+    for d in DOORS:
+        if d['kind'] != 'apt':
+            continue
+        w = WALLS[d['wall']]
+        if w[0] == 'X':
+            face, n = (w[2], 1) if XC > w[2] else (w[1], -1)
+        else:
+            face, n = (w[2], 1) if yc > w[2] else (w[1], -1)
+        out.append((w[0], face, n, d['a0'], d['a1']))
+    return out
 
 
 def stair_common(m, rnd):
@@ -487,13 +598,15 @@ def stair_common(m, rnd):
     xa0, xa1 = LANE_A
     xb0, xb1 = LANE_B
     # entrance hall floor and the five steps up to the first floor
-    pbox(m, x0, T, 0.0, x1, 2.69, VEST_Z, 'pk_stair_side', 'pk_floor_int')
+    ye = Y_FL - 4 * TREAD
+    rise = (PL - VEST_Z) / 5
+    pbox(m, x0, T, 0.0, x1, ye, VEST_Z, 'pk_stair_side', 'pk_floor_int')
     for k in range(1, 5):
-        pbox(m, xb0, 2.69 + (k - 1) * TREAD, 0.0, xb1, 2.69 + k * TREAD, VEST_Z + k * 0.16, 'pk_stair_side', 'pk_stair')
-    railing(m, xb0 - 0.01, 2.69, VEST_Z, Y_FL, PL - 0.16, 4)
+        pbox(m, xb0, ye + (k - 1) * TREAD, 0.0, xb1, ye + k * TREAD, VEST_Z + k * rise, 'pk_stair_side', 'pk_stair')
+    railing(m, xb0 - 0.01, ye, VEST_Z, Y_FL, PL - rise, 4)
     # basement door in the base of the first flight
-    pbox(m, 6.75, 1.85 - 0.04, VEST_Z, 7.55, 1.85 + 0.01, VEST_Z + 0.85, 'pk_door_base')
-    pbox(m, 7.42, 1.85 - 0.06, VEST_Z + 0.4, 7.47, 1.85 - 0.04, VEST_Z + 0.48, 'pk_rail')
+    pbox(m, x0 + 0.28, Y_MID - 0.04, VEST_Z, x0 + 1.08, Y_MID + 0.01, VEST_Z + 0.85, 'pk_door_base')
+    pbox(m, x0 + 0.95, Y_MID - 0.06, VEST_Z + 0.4, x0 + 1.0, Y_MID - 0.04, VEST_Z + 0.48, 'pk_rail')
     # mailboxes on the wall of the entrance hall
     for i in range(3):
         for j in range(5):
@@ -501,24 +614,26 @@ def stair_common(m, rnd):
             z = 1.05 + i * 0.3
             pbox(m, x0, y, z, x0 + 0.2, y + 0.22, z + 0.27, 'pk_mailbox', 'pk_mailbox')
             pbox(m, x0 + 0.2, y + 0.03, z + 0.17, x0 + 0.205, y + 0.19, z + 0.2, 'pk_rail')
-    pbox(m, 7.87, 2.69, 0.0, 8.13, Y_FL, VEST_Z, 'pk_stair_side', 'pk_stair')
+    pbox(m, xa1, ye, 0.0, xb0, Y_FL, VEST_Z, 'pk_stair_side', 'pk_stair')
     pbox(m, x1 - 0.12, 0.7, 0.45, x1, 1.6, 0.95, 'pk_radiator')
-    # bulb over the entrance hall
-    m.cyl(8.0, by(1.2), PL + 1.35 - 0.2 - 0.12, PL + 1.35 - 0.2, 0.006, 4, 'pk_rail')
-    m.cyl(8.0, by(1.2), PL + 1.35 - 0.2 - 0.2, PL + 1.35 - 0.2 - 0.12, 0.035, 8, 'pk_lampshade', r1=0.025)
+    # bulb over the entrance hall, under the first half landing
+    zh = PL + 8 * RISE - 0.2
+    m.cyl(XC, by(1.2), zh - 0.12, zh, 0.006, 4, 'pk_rail')
+    m.cyl(XC, by(1.2), zh - 0.2, zh - 0.12, 0.035, 8, 'pk_lampshade', r1=0.025)
     # ceiling of the stairwell under the roof, with the hatch
     hx0, hy0, hx1, hy1 = HATCH
     zc = ROOF - SLAB
-    for (a0, b0, a1, b1) in ((x0, T, x1, hy0), (x0, hy1, x1, 5.53), (x0, hy0, hx0, hy1), (hx1, hy0, x1, hy1)):
+    for (a0, b0, a1, b1) in ((x0, T, x1, hy0), (x0, hy1, x1, Y_LAND), (x0, hy0, hx0, hy1), (hx1, hy0, x1, hy1)):
         pquad(m, [(a0, b0, zc), (a1, b0, zc), (a1, b1, zc), (a0, b1, zc)], 'pk_ceil_int', (0, 0, -1))
     # steel ladder up to the hatch, against the back wall of the landing
     ztop = floor_z(FLOORS - 1)
-    for x in (6.85, 7.35):
-        pbox(m, x - 0.02, 5.53 - 0.2, ztop, x + 0.02, 5.53 - 0.16, zc, 'pk_rail')
-        pbox(m, x - 0.02, 5.53 - 0.16, zc - 0.3, x + 0.02, 5.53, zc - 0.26, 'pk_rail')
+    lx0, lx1, ly = LADDER
+    for x in (lx0, lx1):
+        pbox(m, x - 0.02, ly - 0.02, ztop, x + 0.02, ly + 0.02, zc, 'pk_rail')
+        pbox(m, x - 0.02, ly + 0.02, zc - 0.3, x + 0.02, Y_LAND, zc - 0.26, 'pk_rail')
     for i in range(9):
         z = ztop + 0.3 + i * 0.28
-        m.htube(6.85, by(5.53 - 0.18), z, 7.35, by(5.53 - 0.18), z, 0.012, 'pk_rail', 4)
+        m.htube(lx0, by(ly), z, lx1, by(ly), z, 0.012, 'pk_rail', 4)
 
 
 # ------------------------------------------------------------------ furniture
@@ -536,6 +651,15 @@ class F2:
         self.m, self.x, self.y, self.z, self.mir = m, x, y, z, mir
         self.f = FACE[face]
         self.r = (-self.f[1], self.f[0])
+
+    def at(self, du, dv=0.0, dz=0.0):
+        """The same frame moved du along the wall (and dv out from it, dz up)."""
+        g = F2.__new__(F2)
+        g.__dict__.update(self.__dict__)
+        g.x = self.x + self.r[0] * du + self.f[0] * dv
+        g.y = self.y + self.r[1] * du + self.f[1] * dv
+        g.z = self.z + dz
+        return g
 
     def pt(self, u, v):
         x = self.x + self.r[0] * u + self.f[0] * v
@@ -785,10 +909,10 @@ def trumo(F):
     F.box(-0.5, 0, 0.0, 0.5, 0.42, 0.75, 'pk_veneer', 'pk_veneer')
     F.box(-0.48, 0.42, 0.45, 0.48, 0.43, 0.72, 'pk_veneer_door')
     F.box(-0.3, 0.02, 0.75, 0.3, 0.05, 1.65, 'pk_veneer')
-    F.quad(-0.27, 0.27, 0.052, 0.8, 1.6, 'pk_mirror')
+    F.quad(-0.27, 0.27, 0.058, 0.8, 1.6, 'pk_mirror')
     for s in (-1, 1):
         F.box(s * 0.3 if s > 0 else -0.5, 0.02, 0.75, 0.5 if s > 0 else -0.3, 0.05, 1.35, 'pk_veneer')
-        F.quad(s * 0.31 if s > 0 else -0.48, 0.48 if s > 0 else -0.31, 0.052, 0.8, 1.3, 'pk_mirror')
+        F.quad(s * 0.31 if s > 0 else -0.48, 0.48 if s > 0 else -0.31, 0.058, 0.8, 1.3, 'pk_mirror')
     # perfume and a jewellery box
     F.cyl(-0.2, 0.25, 0.75, 0.86, 0.025, 'pk_crystal', 6)
     F.cyl(-0.12, 0.28, 0.75, 0.83, 0.02, 'pk_crystal', 6)
@@ -852,7 +976,7 @@ def pc(F, u, v, z, tower_u=None):
     F.box(u - 0.06, v + 0.02, z, u + 0.06, v + 0.14, z + 0.04, 'pk_plastic_beige')
     F.box(u - 0.17, v + 0.0, z + 0.06, u + 0.17, v + 0.22, z + 0.36, 'pk_plastic_beige')
     F.box(u - 0.21, v + 0.22, z + 0.04, u + 0.21, v + 0.36, z + 0.42, 'pk_plastic_beige')
-    F.quad(u - 0.17, u + 0.17, v + 0.362, z + 0.09, z + 0.36, 'pk_screen_xp')
+    F.quad(u - 0.17, u + 0.17, v + 0.366, z + 0.09, z + 0.36, 'pk_screen_xp')
     F.box(u - 0.23, v + 0.4, z, u + 0.23, v + 0.55, z + 0.03, 'pk_plastic_beige')
     F.box(u - 0.21, v + 0.41, z + 0.03, u + 0.21, v + 0.53, z + 0.035, 'pk_keys')
     F.box(u + 0.3, v + 0.42, z, u + 0.5, v + 0.58, z + 0.003, 'pk_paint_blue')
@@ -968,7 +1092,7 @@ def fridge_modern(F):
         F.box(0.22, 0.652, z0, 0.25, 0.68, z1, 'pk_plastic_grey')
     # microwave on top
     F.box(-0.25, 0.1, 1.85, 0.25, 0.48, 2.12, 'pk_plastic_grey', 'pk_plastic_grey')
-    F.quad(-0.22, 0.08, 0.481, 1.89, 2.08, 'pk_dark', uv=False)
+    F.quad(-0.22, 0.08, 0.486, 1.89, 2.08, 'pk_dark', uv=False)
     collide(F, -0.3, 0, 0.3, 0.68, 1.85)
 
 
@@ -981,7 +1105,7 @@ def stove(F, oven_glass=True, kettle=True, style='sov'):
             F.cyl(a * 0.12, b, 0.85, 0.87, 0.055, 'pk_rail', 8)
             F.cyl(a * 0.12, b, 0.87, 0.875, 0.035, 'pk_metal', 8)
     F.box(-0.22, 0.6, 0.18, 0.22, 0.612, 0.62, 'pk_enamel')
-    F.quad(-0.15, 0.15, 0.613, 0.32, 0.55, 'pk_dark', uv=False)
+    F.quad(-0.15, 0.15, 0.62, 0.32, 0.55, 'pk_dark', uv=False)
     F.box(-0.18, 0.612, 0.6, 0.18, 0.64, 0.61, 'pk_chrome')
     for k in range(4):
         F.cyl(-0.18 + k * 0.12, 0.62, 0.72, 0.74, 0.02, 'pk_plastic_black', 6)
@@ -1000,7 +1124,7 @@ def sink_cabinet(F, style='sov'):
     F.box(-0.29, 0.58, 0.1, -0.005, 0.59, 0.8, body)
     F.box(0.005, 0.58, 0.1, 0.29, 0.59, 0.8, body)
     F.box(-0.3, 0, 0.82, 0.3, 0.6, 0.86, 'pk_chrome' if style == 'sov' else 'pk_counter')
-    F.box(-0.2, 0.12, 0.861, 0.2, 0.48, 0.863, 'pk_sink_well')
+    F.box(-0.2, 0.12, 0.86, 0.2, 0.48, 0.866, 'pk_sink_well')
     F.cyl(0, 0.06, 0.86, 1.05, 0.012, 'pk_chrome', 6)
     F.tube((0, 0.06, 1.05), (0, 0.22, 1.02), 0.012, 'pk_chrome', 4)
     for s in (-1, 1):
@@ -1012,7 +1136,7 @@ def sink_cabinet(F, style='sov'):
 def gas_heater(F):
     """Gas water heater (kolonka) over the sink with its flue going up."""
     F.box(-0.17, 0.0, 1.3, 0.17, 0.24, 1.95, 'pk_enamel', 'pk_enamel', 'pk_enamel')
-    F.quad(-0.05, 0.05, 0.241, 1.45, 1.53, 'pk_glow_flame', uv=False)
+    F.quad(-0.05, 0.05, 0.245, 1.45, 1.53, 'pk_glow_flame', uv=False)
     F.cyl(0.08, 0.242, 1.38, 1.4, 0.02, 'pk_plastic_black', 6)
     F.cyl(0, 0.12, 1.95, 2.48, 0.06, 'pk_metal', 8)
     F.tube((-0.12, 0.08, 1.3), (-0.12, 0.08, 1.05), 0.012, 'pk_chrome', 4)
@@ -1083,10 +1207,10 @@ def bath_sink(F, cabinet=False):
     else:
         F.cyl(0, 0.2, 0.0, 0.72, 0.07, 'pk_enamel', 6)
     F.box(-0.25, 0, 0.72, 0.25, 0.45, 0.85, 'pk_enamel', 'pk_enamel')
-    F.box(-0.18, 0.1, 0.851, 0.18, 0.38, 0.853, 'pk_sink_well')
+    F.box(-0.18, 0.1, 0.85, 0.18, 0.38, 0.856, 'pk_sink_well')
     F.cyl(0, 0.04, 0.85, 1.0, 0.012, 'pk_chrome', 6)
     F.tube((0, 0.04, 1.0), (0, 0.16, 0.97), 0.01, 'pk_chrome', 4)
-    F.quad(-0.22, 0.22, 0.008, 1.15, 1.7, 'pk_mirror')
+    F.quad(-0.22, 0.22, 0.012, 1.15, 1.7, 'pk_mirror')
     F.box(-0.24, 0, 1.08, 0.24, 0.12, 1.1, 'pk_glass_int')
     F.cyl(-0.12, 0.06, 1.1, 1.2, 0.03, 'pk_paint_blue', 6)
     F.cyl(0.1, 0.06, 1.1, 1.22, 0.025, 'pk_paint_red', 6)
@@ -1123,7 +1247,7 @@ def coat_rack(F, L=1.5):
 
 
 def mirror_shelf(F, phone=True):
-    F.quad(-0.25, 0.25, 0.01, 1.05, 1.8, 'pk_mirror')
+    F.quad(-0.25, 0.25, 0.017, 1.05, 1.8, 'pk_mirror')
     F.box(-0.28, 0, 1.02, 0.28, 0.01, 1.83, 'pk_veneer')
     F.box(-0.25, 0, 0.92, 0.25, 0.2, 0.95, 'pk_veneer', 'pk_veneer', 'pk_veneer')
     if phone:
@@ -1140,249 +1264,92 @@ def wall_clock(F, z=1.95):
 def radio_point(F, z=1.6):
     """The wired radio every Soviet kitchen had on the wall."""
     F.box(-0.12, 0, z, 0.12, 0.09, z + 0.16, 'pk_plastic_brown', 'pk_plastic_brown')
-    F.quad(-0.1, 0.02, 0.091, z + 0.03, z + 0.13, 'pk_grille')
+    F.quad(-0.1, 0.02, 0.095, z + 0.03, z + 0.13, 'pk_grille')
     F.cyl(0.07, 0.092, z + 0.07, z + 0.09, 0.02, 'pk_paper', 6)
 
 
 # ------------------------------------------------------------------ rooms
 
-def kitchen_left(m, style, mir, rnd):
-    """Kitchen of L (or R when mirrored): appliances along the cross wall, table under the window."""
-    if style == 'sov':
-        fridge_zil(F2(m, 3.27, 2.02, 'E', mir))
-        wall_cabinet(F2(m, 3.27, 2.02, 'E', mir), 0.6, 1.62, 2.2)
-        stove(F2(m, 3.27, 1.43, 'E', mir))
-        sink_cabinet(F2(m, 3.27, 0.87, 'E', mir))
-        gas_heater(F2(m, 3.27, 0.82, 'E', mir))
-        kitchen_table(F2(m, 4.8, 0.55, 'S', mir))
-        F = F2(m, 4.8, 0.55, 'S', mir)
-        stool(F, 0.25, 0.8)
-        stool(F, -0.82, 0.33)
-        radio_point(F2(m, 6.33, 1.0, 'W', mir))
-        wall_clock(F2(m, 6.33, 1.8, 'W', mir))
-        curtains(m, 'front', 10.6 if mir else 4.2, 11.8 if mir else 5.4, 0.0, style, short=True)
-    else:
-        kitchen_run(F2(m, 3.27, 0.73, 'E', mir), 0.66)
-        sink_insert(F2(m, 3.27, 0.73, 'E', mir))
-        stove(F2(m, 3.27, 1.31, 'E', mir), style='xp', kettle=False)
-        F2(m, 3.27, 1.31, 'E', mir).box(-0.3, 0, 1.6, 0.3, 0.5, 1.75, 'pk_chrome', 'pk_chrome')
-        wall_cabinet(F2(m, 3.27, 0.73, 'E', mir), 0.66, 1.45, 2.15, mat='pk_kitchen')
-        fridge_modern(F2(m, 3.27, 2.02, 'E', mir))
-        kitchen_table(F2(m, 4.8, 0.55, 'S', mir), 0.8, 0.6, oilcloth=False)
-        F = F2(m, 4.8, 0.55, 'S', mir)
-        chair(F, 0.2, 0.85, mat='pk_veneer_light')
-        chair(F, -0.8, 0.33, mat='pk_veneer_light')
-        F2(m, 3.27, 0.73, 'E', mir).cyl(0.2, 0.3, 0.86, 1.08, 0.08, 'pk_plastic_grey', 8)
-        wall_clock(F2(m, 6.33, 1.8, 'W', mir))
-        pbox(m, 10.5 if mir else 4.1, T + 0.05, 2.28, 11.9 if mir else 5.5, T + 0.12, 2.36, 'pk_paper')
-        curtains(m, 'front', 10.6 if mir else 4.2, 11.8 if mir else 5.4, 0.0, style, short=True)
-    plafond(m, 11.2 if mir else 4.8, 1.35, CEIL, 0.17)
-    plants(m, 'front', 10.6 if mir else 4.2, 11.8 if mir else 5.4, 0.0, rnd)
-
-
 def sink_insert(F):
-    F.box(-0.25, 0.1, 0.861, 0.25, 0.5, 0.863, 'pk_sink_well')
+    F.box(-0.25, 0.1, 0.86, 0.25, 0.5, 0.866, 'pk_sink_well')
     F.cyl(0, 0.05, 0.86, 1.08, 0.014, 'pk_chrome', 6)
     F.tube((0, 0.05, 1.08), (0, 0.25, 1.02), 0.012, 'pk_chrome', 4)
 
 
-def bath_left(m, style, mir):
-    bathtub(F2(m, 3.27, 3.21, 'E', mir))
-    toilet(F2(m, 4.19, 2.43, 'S', mir))
-    bath_sink(F2(m, 4.7, 2.43, 'S', mir), cabinet=(style == 'xp'))
-    towel_rail(F2(m, 4.97, 2.75, 'W', mir))
-    m.cyl(W - 3.33 if mir else 3.33, by(2.5), 0.0, CEIL, 0.03, 6, 'pk_metal')
-    m.cyl(W - 3.42 if mir else 3.42, by(2.5), 0.0, CEIL, 0.025, 6, 'pk_metal')
-    pbox(m, W - 4.95 if mir else 4.45, 2.88, 0.0, W - 4.45 if mir else 4.95, 3.3, 0.01, 'pk_mat')
-    plafond(m, W - 4.4 if mir else 4.4, 3.4, CEIL, 0.12)
+STYLES = ('sov', 'xp', 'eu', 'mod', 'old')
 
 
-def hall_left(m, style, mir):
-    coat_rack(F2(m, 4.12, 4.08, 'S', mir))
-    mirror_shelf(F2(m, 6.33, 3.05, 'W', mir), phone=(style == 'sov'))
-    pbox(m, W - 6.3 if mir else 5.6, 4.45, 0.0, W - 5.6 if mir else 6.3, 5.2, 0.01, 'pk_mat')
-    plafond(m, W - 5.6 if mir else 5.6, 4.6, CEIL, 0.14)
+def left_wing(m, st, rnd, mir):
+    """Kitchen, bath and hall of L (or of R, the same rooms turned over)."""
+    import rooms
+    mx = (lambda x: W - x) if mir else (lambda x: x)
+    rooms.kitchen(m, st, rnd, F2(m, 3.27, 0.4, 'E', mir), 1.92, F2(m, 4.8, 0.55, 'S', mir), (mx(4.8), 1.35),
+                  radio=F2(m, 6.33, 1.0, 'W', mir), clock=F2(m, 6.33, 1.8, 'W', mir))
+    rooms.window_dressing(m, st, rnd, 'front', 10.6 if mir else 4.2, 11.8 if mir else 5.4, short=True)
+    rooms.bath(m, st, F2(m, 3.27, 3.21, 'E', mir), F2(m, 4.19, 2.43, 'S', mir), F2(m, 4.7, 2.43, 'S', mir),
+               rail=F2(m, 4.97, 2.75, 'W', mir), lamp=(mx(4.4), 3.4),
+               line=(min(mx(3.35), mx(4.9)), max(mx(3.35), mx(4.9)), 3.75, CEIL))
+    m.cyl(mx(3.33), by(2.5), 0.0, CEIL, 0.03, 6, 'pk_metal')
+    m.cyl(mx(3.42), by(2.5), 0.0, CEIL, 0.025, 6, 'pk_metal')
+    pbox(m, min(mx(4.95), mx(4.45)), 2.88, 0.0, max(mx(4.95), mx(4.45)), 3.3, 0.01, 'pk_mat')
+    rooms.hall(m, st, F2(m, 4.12, 4.08, 'S', mir), F2(m, 6.33, 3.05, 'W', mir), (mx(5.6), 4.6))
+    pbox(m, min(mx(6.3), mx(5.6)), 4.45, 0.0, max(mx(6.3), mx(5.6)), 5.2, 0.01, 'pk_mat')
 
 
-def furnish_L(m, style):
-    rnd = random.Random(11 if style == 'sov' else 12)
-    kitchen_left(m, style, False, rnd)
-    bath_left(m, style, False)
-    hall_left(m, style, False)
-    # living room
-    if style == 'sov':
-        stenka(F2(m, 6.33, 8.25, 'W'), 3.3)
-        sofa(F2(m, 3.27, 8.2, 'E'))
-        wall_carpet(F2(m, 3.27, 8.2, 'E'), 2.0, 0.95, 2.2)
-        coffee_table(F2(m, 4.35, 8.2, 'E'), 1.0, 0.5)
-        armchair(F2(m, 4.98, 10.72, 'N'))
-        floor_lamp(m, 3.5, 9.62, 0.0, 'pk_lampshade_f')
-        F2(m, 4.8, 7.0, 'S').flat(-0.9, 0.0, 0.9, 2.6, 0.006, 'pk_carpet')
-        chandelier(m, 4.8, 8.36, CEIL, 'sov')
-    else:
-        sofa(F2(m, 3.27, 8.1, 'E'), 2.1, 0.95, 'pk_leather', leather=True)
-        tv_stand(F2(m, 6.33, 8.2, 'W'))
-        bookshelf(F2(m, 6.33, 9.6, 'W'), 0.8, 0.35, 1.9, 'xp')
-        F2(m, 6.33, 8.2, 'W').box(-0.6, 0, 1.45, 0.6, 0.25, 1.48, 'pk_veneer_light', 'pk_veneer_light', 'pk_veneer_light')
-        coffee_table(F2(m, 4.4, 8.15, 'E'), 0.9, 0.55, 0.45, glass=True)
-        desk(F2(m, 5.25, 10.92, 'N'), 1.2, 0.6, 'xp')
-        pc(F2(m, 5.25, 10.92, 'N'), -0.05, 0.02, 0.75, tower_u=-0.45)
-        office_chair(F2(m, 5.25, 10.92, 'N'), 0.0, 1.0)
-        F2(m, 4.8, 7.2, 'S').flat(-0.8, 0.0, 0.8, 2.2, 0.006, 'pk_rug')
-        chandelier(m, 4.8, 8.36, CEIL, 'xp')
-    curtains(m, 'back', 3.65, 5.8, 0.0, style)
-    plants(m, 'back', 4.6, 5.8, 0.0, rnd)
-    # bedroom
-    if style == 'sov':
-        wardrobe(F2(m, 0.8, 5.67, 'S'))
-        trumo(F2(m, 3.13, 10.1, 'W'))
-        chair(F2(m, 3.13, 10.1, 'W'), 0.0, 0.75)
-        wall_carpet(F2(m, 0.08, 8.2, 'E'), 2.0, 0.85, 2.05)
-    else:
-        wardrobe(F2(m, 1.09, 5.67, 'S'), 2.0, sliding=True)
-        chest(F2(m, 3.13, 9.9, 'W'), tv=True)
-    bed(F2(m, 0.08, 8.2, 'E'), style=style)
-    nightstand(F2(m, 0.08, 7.15, 'E'))
-    nightstand(F2(m, 0.08, 9.25, 'E'), lamp=False)
-    chandelier(m, 1.6, 8.36, CEIL, style)
-    curtains(m, 'back', 0.85, 2.35, 0.0, style)
-    # small room
-    if style == 'sov':
-        desk(F2(m, 1.55, 0.52, 'S'))
-        table_lamp(F2(m, 1.55, 0.52, 'S'), -0.4, 0.2, 0.75)
-        F = F2(m, 1.55, 0.52, 'S')
-        F.cyl(0.25, 0.25, 0.75, 0.78, 0.05, 'pk_veneer', 6)
-        F.cyl(0.25, 0.25, 0.78, 0.95, 0.008, 'pk_chrome', 4)
-        F.cyl(0.25, 0.25, 0.95, 1.15, 0.0, 'pk_globe', 10, r1=0.1)
-        F.box(-0.1, 0.1, 0.75, 0.2, 0.32, 0.77, 'pk_paper')
-        chair(F, 0.0, 0.85)
-        wall_carpet(F2(m, 0.08, 3.2, 'E'), 1.8, 0.75, 1.95)
-        F2(m, 1.6, 2.0, 'S').flat(-0.7, 0.0, 0.7, 1.8, 0.006, 'pk_carpet')
-    else:
-        desk(F2(m, 1.55, 0.52, 'S'), 1.3, 0.6, 'xp')
-        pc(F2(m, 1.55, 0.52, 'S'), 0.05, 0.02, 0.75, tower_u=0.48)
-        office_chair(F2(m, 1.55, 0.52, 'S'), 0.0, 1.0)
-        F2(m, 1.6, 2.2, 'S').flat(-0.6, 0.0, 0.6, 1.6, 0.006, 'pk_rug')
-    bed_along(F2(m, 0.08, 3.2, 'E'), style=style, fab='pk_bedding_b')
-    bookshelf(F2(m, 3.13, 1.7, 'W'), 1.4, 0.3, 1.8, style)
-    wardrobe(F2(m, 0.68, 5.53, 'N'))
-    chandelier(m, 1.6, 2.94, CEIL, 'xp' if style == 'xp' else 'sov')
-    curtains(m, 'front', 0.85, 2.35, 0.0, style)
-    plants(m, 'front', 0.85, 2.35, 0.0, rnd)
+def furnish_L(m, st):
+    import rooms
+    rnd = random.Random(11 + STYLES.index(st) * 7)
+    left_wing(m, st, rnd, False)
+    rooms.living(m, st, rnd, F2(m, 6.33, 8.25, 'W'), F2(m, 3.27, 8.2, 'E'), F2(m, 4.35, 8.2, 'E'), (4.8, 8.36),
+                 unit_len=3.3, unit2=F2(m, 6.33, 9.6, 'W'), corner=F2(m, 4.98, 10.72, 'N'), desk=F2(m, 5.25, 10.92, 'N'),
+                 rug=F2(m, 4.8, 7.0, 'S'), floorlamp=(3.5, 9.62))
+    rooms.window_dressing(m, st, rnd, 'back', 3.65, 5.8)
+    rooms.bedroom(m, st, rnd, F2(m, 0.08, 8.2, 'E'), F2(m, 1.09, 5.67, 'S'), F2(m, 3.13, 10.0, 'W'), (1.6, 8.36),
+                  ward_max=2.0, carpet=F2(m, 0.08, 8.2, 'E'))
+    rooms.window_dressing(m, st, rnd, 'back', 0.85, 2.35, plants=False)
+    rooms.small_room(m, st, rnd, F2(m, 0.08, 3.2, 'E'), F2(m, 1.55, 0.52, 'S'), F2(m, 3.13, 1.7, 'W'),
+                     F2(m, 0.68, 5.53, 'N'), (1.6, 2.94), rug=F2(m, 1.6, 2.0, 'S'))
+    rooms.window_dressing(m, st, rnd, 'front', 0.85, 2.35)
 
 
-def furnish_R(m, style):
-    rnd = random.Random(21 if style == 'sov' else 22)
-    kitchen_left(m, style, True, rnd)
-    bath_left(m, style, True)
-    hall_left(m, style, True)
+def furnish_R(m, st):
+    import rooms
+    rnd = random.Random(21 + STYLES.index(st) * 7)
+    left_wing(m, st, rnd, True)
     # living room on the entrance side
-    if style == 'sov':
-        stenka(F2(m, 12.87, 2.25, 'E'), 3.3)
-        sofa(F2(m, 15.92, 2.4, 'W'))
-        wall_carpet(F2(m, 15.92, 2.4, 'W'), 2.0, 0.95, 2.2)
-        coffee_table(F2(m, 14.65, 2.4, 'W'), 1.0, 0.5)
-        armchair(F2(m, 15.92, 4.2, 'W'))
-        floor_lamp(m, 15.65, 0.75, 0.0, 'pk_lampshade_f')
-        F2(m, 14.3, 1.2, 'S').flat(-0.7, 0.0, 0.7, 2.4, 0.006, 'pk_carpet')
-    else:
-        tv_stand(F2(m, 12.87, 2.7, 'E'))
-        bookshelf(F2(m, 12.87, 1.1, 'E'), 0.8, 0.35, 1.9, 'xp')
-        sofa(F2(m, 15.92, 2.5, 'W'), 2.1, 0.95, 'pk_leather', leather=True)
-        coffee_table(F2(m, 14.7, 2.5, 'W'), 0.9, 0.5, 0.45, glass=True)
-        desk(F2(m, 14.4, 0.52, 'S'), 1.2, 0.6, 'xp')
-        pc(F2(m, 14.4, 0.52, 'S'), 0.0, 0.02, 0.75, tower_u=0.42)
-        office_chair(F2(m, 14.4, 0.52, 'S'), 0.0, 0.98)
-        F2(m, 14.3, 1.7, 'S').flat(-0.6, 0.0, 0.6, 1.8, 0.006, 'pk_rug')
-    chandelier(m, 14.4, 2.94, CEIL, style)
-    curtains(m, 'front', 13.65, 15.15, 0.0, style)
-    plants(m, 'front', 13.65, 15.15, 0.0, rnd)
-    # bedroom
-    if style == 'sov':
-        wardrobe(F2(m, 15.2, 5.67, 'S'))
-        trumo(F2(m, 12.87, 9.9, 'E'))
-        wall_carpet(F2(m, 15.92, 8.4, 'W'), 2.0, 0.85, 2.05)
-    else:
-        wardrobe(F2(m, 15.23, 5.67, 'S'), 1.38, sliding=True)
-        chest(F2(m, 12.87, 9.9, 'E'), tv=True)
-    bed(F2(m, 15.92, 8.4, 'W'), style=style)
-    nightstand(F2(m, 15.92, 7.35, 'W'))
-    nightstand(F2(m, 15.92, 9.45, 'W'), lamp=False)
-    chandelier(m, 14.4, 8.36, CEIL, style)
-    curtains(m, 'back', 13.65, 15.15, 0.0, style)
+    rooms.living(m, st, rnd, F2(m, 12.87, 2.25, 'E'), F2(m, 15.92, 2.4, 'W'), F2(m, 14.65, 2.4, 'W'), (14.4, 2.94),
+                 unit_len=3.3, unit2=F2(m, 12.87, 1.1, 'E'), corner=F2(m, 15.92, 4.2, 'W'), desk=F2(m, 14.4, 0.52, 'S'),
+                 rug=F2(m, 14.3, 1.2, 'S'), floorlamp=(15.65, 0.75))
+    rooms.window_dressing(m, st, rnd, 'front', 13.65, 15.15)
+    rooms.bedroom(m, st, rnd, F2(m, 15.92, 8.4, 'W'), F2(m, 15.2, 5.67, 'S'), F2(m, 12.87, 9.9, 'E'), (14.4, 8.36),
+                  ward_max=1.38, carpet=F2(m, 15.92, 8.4, 'W'))
+    rooms.window_dressing(m, st, rnd, 'back', 13.65, 15.15, plants=False)
 
 
-def furnish_B(m, style):
-    rnd = random.Random(31 if style == 'sov' else 32)
-    # hall
-    coat_rack(F2(m, 6.47, 6.45, 'E'), 1.2)
-    F2(m, 6.78, 7.3, 'N').quad(-0.22, 0.22, 0.01, 1.0, 1.75, 'pk_mirror')
+def furnish_B(m, st):
+    import rooms
+    rnd = random.Random(31 + STYLES.index(st) * 7)
+    rooms.hall(m, st, F2(m, 6.47, 6.45, 'E'), F2(m, 6.78, 7.3, 'N'), (8.0, 6.45), coat_len=1.2)
     pbox(m, 7.65, 5.72, 0.0, 8.45, 6.2, 0.01, 'pk_mat')
-    plafond(m, 8.0, 6.45, CEIL, 0.14)
-    # bath
-    bathtub(F2(m, 6.47, 8.17, 'E'))
-    toilet(F2(m, 7.45, 8.97, 'N'))
-    bath_sink(F2(m, 8.17, 8.5, 'W'), cabinet=(style == 'xp'))
+    rooms.bath(m, st, F2(m, 6.47, 8.17, 'E'), F2(m, 7.45, 8.97, 'N'), F2(m, 8.17, 8.5, 'W'), lamp=(7.3, 8.3),
+               line=(6.5, 8.1, 7.6, CEIL))
     m.cyl(6.52, by(8.92), 0.0, CEIL, 0.03, 6, 'pk_metal')
-    plafond(m, 7.3, 8.3, CEIL, 0.12)
-    # kitchen
-    if style == 'sov':
-        fridge_zil(F2(m, 6.47, 9.36, 'E'))
-        stove(F2(m, 6.47, 9.95, 'E'))
-        sink_cabinet(F2(m, 6.47, 10.55, 'E'))
-        gas_heater(F2(m, 6.47, 10.55, 'E'))
-        wall_cabinet(F2(m, 6.47, 9.95, 'E'), 0.6, 1.55, 2.15)
-        kitchen_table(F2(m, 8.05, 10.92, 'N'))
-        F = F2(m, 8.05, 10.92, 'N')
-        stool(F, -0.8, 0.3)
-        stool(F, 0.2, 0.85)
-        radio_point(F2(m, 9.53, 10.0, 'W'))
-    else:
-        fridge_modern(F2(m, 6.47, 9.36, 'E'))
-        stove(F2(m, 6.47, 9.95, 'E'), style='xp', kettle=False)
-        kitchen_run(F2(m, 6.47, 10.55, 'E'), 0.6)
-        sink_insert(F2(m, 6.47, 10.55, 'E'))
-        wall_cabinet(F2(m, 6.47, 10.55, 'E'), 0.6, 1.45, 2.15, mat='pk_kitchen')
-        F2(m, 6.47, 9.95, 'E').box(-0.3, 0, 1.6, 0.3, 0.5, 1.75, 'pk_chrome', 'pk_chrome')
-        kitchen_table(F2(m, 8.05, 10.92, 'N'), 0.8, 0.6, oilcloth=False)
-        F = F2(m, 8.05, 10.92, 'N')
-        chair(F, -0.75, 0.3, mat='pk_veneer_light')
-        chair(F, 0.2, 0.85, mat='pk_veneer_light')
-    wall_clock(F2(m, 9.53, 10.6, 'W'))
-    plafond(m, 8.0, 10.05, CEIL, 0.17)
-    curtains(m, 'back', 7.4, 8.6, 0.0, style, short=True)
-    plants(m, 'back', 7.4, 8.6, 0.0, rnd)
-    # room
-    if style == 'sov':
-        sofa(F2(m, 12.73, 8.0, 'W'))
-        wall_carpet(F2(m, 12.73, 8.0, 'W'), 2.0, 0.95, 2.2)
-        stenka(F2(m, 9.67, 8.5, 'E'), 3.0)
-        wardrobe(F2(m, 11.2, 5.67, 'S'))
-        coffee_table(F2(m, 11.33, 8.0, 'W'), 1.0, 0.5)
-        armchair(F2(m, 11.48, 10.72, 'N'))
-        floor_lamp(m, 12.45, 9.45, 0.0, 'pk_lampshade_f')
-        F2(m, 11.0, 7.0, 'S').flat(-0.7, 0.0, 0.7, 2.2, 0.006, 'pk_carpet')
-    else:
-        sofa(F2(m, 12.73, 8.0, 'W'), 2.1, 0.95, 'pk_leather', leather=True)
-        tv_stand(F2(m, 9.67, 8.3, 'E'))
-        bookshelf(F2(m, 9.67, 9.55, 'E'), 0.8, 0.35, 1.9, 'xp')
-        wardrobe(F2(m, 11.2, 5.67, 'S'), 1.6, sliding=True)
-        coffee_table(F2(m, 11.35, 8.0, 'W'), 0.9, 0.5, 0.45, glass=True)
-        desk(F2(m, 11.6, 10.92, 'N'), 1.2, 0.6, 'xp')
-        pc(F2(m, 11.6, 10.92, 'N'), 0.0, 0.02, 0.75, tower_u=0.45)
-        office_chair(F2(m, 11.6, 10.92, 'N'), 0.0, 1.0)
-        F2(m, 11.0, 7.2, 'S').flat(-0.6, 0.0, 0.6, 2.0, 0.006, 'pk_rug')
-    chandelier(m, 11.2, 8.36, CEIL, style)
-    curtains(m, 'back', 10.05, 12.2, 0.0, style)
-    plants(m, 'back', 11.0, 12.2, 0.0, rnd)
+    rooms.kitchen(m, st, rnd, F2(m, 6.47, 9.05, 'E'), 2.0, F2(m, 8.05, 10.92, 'N'), (8.0, 10.05),
+                  radio=F2(m, 9.53, 10.0, 'W'), clock=F2(m, 9.53, 10.6, 'W'), rev=True, seats=((-0.8, 0.3), (0.2, 0.85)))
+    rooms.window_dressing(m, st, rnd, 'back', 7.4, 8.6, short=True)
+    rooms.living(m, st, rnd, F2(m, 9.67, 8.5, 'E'), F2(m, 12.73, 8.0, 'W'), F2(m, 11.43, 8.0, 'W'), (11.2, 8.36),
+                 unit_len=3.0, unit2=F2(m, 9.67, 10.0, 'E'), corner=F2(m, 11.48, 10.72, 'N'), desk=F2(m, 11.6, 10.92, 'N'),
+                 rug=F2(m, 11.0, 7.0, 'S'), floorlamp=(12.45, 9.45))
+    rooms.wardrobe_style(F2(m, 11.2, 5.67, 'S'), st, 1.2)
+    rooms.window_dressing(m, st, rnd, 'back', 10.05, 12.2)
 
 
 def build_furniture():
     out = []
     for apt, fn in (('L', furnish_L), ('R', furnish_R), ('B', furnish_B)):
-        for style in ('sov', 'xp'):
-            m = Mesh('k5i_%s_%s' % (apt, style), 'interior')
-            fn(m, style)
+        for st in STYLES:
+            m = Mesh('k5i_%s_%s' % (apt, st), 'interior')
+            fn(m, st)
             out.append(m.finish())
     return out
 

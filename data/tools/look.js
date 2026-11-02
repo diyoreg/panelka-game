@@ -23,7 +23,7 @@ try {
   await b.eval(HELPERS);
   const secKey = await b.eval('__qa.sec().key');
   const S = `__game.world.interiors.loaded.find((s) => s.key === '${secKey}')`;
-  const P = await b.eval('JSON.stringify(__game.world.interiors.plan)').then(JSON.parse);
+  const P = await b.eval(`JSON.stringify(${S}.P)`).then(JSON.parse);
   const sh = (n) => b.shot(path.join(out, n + '.png'));
   await new Function('ctx', `return (async ({ b, S, sh, P, sleep }) => { ${body} })(ctx)`)({ b, S, sh, P, sleep });
 } finally {

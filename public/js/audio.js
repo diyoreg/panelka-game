@@ -2,6 +2,8 @@
 // SFX: synthesized footsteps in the snow, landing, wind, a far traffic hum, distant sirens, steam hiss.
 // Snow: a soft low-passed brown noise bed under a quiet wind hiss, it follows the snowfall.
 // Indoors (sfx): footsteps on the floor and the stairs, doors, the light switch; the street is muffled.
+// The lift (lift.js): relays, the door motor and the bang of the doors, buttons, the dispatcher's bell, the hum of
+// the motor and the ropes while the cab moves; all quieter with distance.
 
 const XFADE = 7;          // crossfade length, seconds
 const MUSIC_DIR = 'audio/';
@@ -367,9 +369,10 @@ export class Audio {
     o.stop(t + len + 0.05);
   }
 
-  // Doors, the hatch and the light switch (interiors.js)
-  sfx(kind) {
+  // Doors, the hatch, the light switch and the lift (interiors.js, lift.js); vol: 0..1 by distance
+  sfx(kind, vol = 1) {
     if (!this.ctx) return;
+    if (kind.startsWith('lift_')) { this.liftSfx(kind, vol); return; }
     if (kind === 'switch') {
       this.burst(3200, 3, 0.09, 0.018);
       this.burst(900, 2, 0.05, 0.03);
@@ -395,6 +398,125 @@ export class Audio {
       this.burst(metal ? 700 : 2200, 3, 0.07, 0.04, 'bandpass', 0.02);
       if (metal) this.burst(1300, 6, 0.05, 0.4, 'bandpass', 0.03);
     }
+  }
+
+  // a buzzing little motor: the drive of the lift doors
+  motor(len, vol, base = 92) {
+    const c = this.ctx;
+    const t = c.currentTime;
+    const o = c.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(base * 0.8, t);
+    o.frequency.linearRampToValueAtTime(base, t + 0.25);
+    o.frequency.linearRampToValueAtTime(base * 0.9, t + len);
+    const f = c.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = 380;
+    f.Q.value = 1.2;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.12);
+    g.gain.setValueAtTime(vol, t + len - 0.2);
+    g.gain.linearRampToValueAtTime(0, t + len);
+    o.connect(f).connect(g).connect(this.sfxGain);
+    o.start(t);
+    o.stop(t + len + 0.05);
+    // the leaves rattling in their runners
+    this.burst(1300, 2, vol * 0.35, len, 'bandpass');
+  }
+
+  liftSfx(kind, v) {
+    if (kind === 'lift_button') {
+      this.burst(2800, 3, 0.08 * v, 0.015);
+      this.burst(700, 2, 0.04 * v, 0.03);
+    } else if (kind === 'lift_relay') {
+      // a cabinet of relays clacking over in the machine room and the cab
+      this.burst(1800, 2, 0.1 * v, 0.03);
+      this.burst(420, 1, 0.08 * v, 0.06, 'lowpass', 0.01);
+      this.burst(2100, 2, 0.07 * v, 0.025, 'bandpass', 0.14);
+    } else if (kind === 'lift_start') {
+      // the brake lets go, the cab jerks
+      this.burst(1600, 2, 0.08 * v, 0.03);
+      this.burst(70, 1, 0.25 * v, 0.3, 'lowpass', 0.02);
+    } else if (kind === 'lift_arrive') {
+      this.burst(90, 1, 0.3 * v, 0.3, 'lowpass');
+      this.burst(1900, 2, 0.08 * v, 0.03, 'bandpass', 0.1);
+    } else if (kind === 'lift_stop') {
+      this.burst(60, 1, 0.45 * v, 0.4, 'lowpass');
+      this.burst(900, 6, 0.06 * v, 0.6, 'bandpass', 0.02);
+    } else if (kind === 'lift_door_open') {
+      this.burst(1500, 4, 0.06 * v, 0.03);
+      this.motor(1.4, 0.05 * v);
+      this.burst(180, 1, 0.12 * v, 0.15, 'lowpass', 1.35);
+    } else if (kind === 'lift_door_close') {
+      this.motor(1.4, 0.05 * v, 98);
+    } else if (kind === 'lift_door_shut') {
+      // the leaves bang together and the lock drops in
+      this.burst(110, 1, 0.38 * v, 0.32, 'lowpass');
+      this.burst(950, 8, 0.06 * v, 0.5, 'bandpass', 0.01);
+      this.burst(2400, 4, 0.06 * v, 0.03, 'bandpass', 0.06);
+    } else if (kind === 'lift_bell') {
+      // the electric bell that calls the dispatcher
+      const c = this.ctx;
+      const t = c.currentTime;
+      const o = c.createOscillator();
+      o.type = 'square';
+      o.frequency.value = 1350;
+      const trem = c.createOscillator();
+      trem.frequency.value = 24;
+      const tg = c.createGain();
+      tg.gain.value = 0.5;
+      const f = c.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.value = 2600;
+      f.Q.value = 2;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.05 * v, t + 0.02);
+      g.gain.setValueAtTime(0.05 * v, t + 1.0);
+      g.gain.linearRampToValueAtTime(0, t + 1.1);
+      trem.connect(tg).connect(g.gain);
+      o.connect(f).connect(g).connect(this.sfxGain);
+      o.start(t); trem.start(t);
+      o.stop(t + 1.15); trem.stop(t + 1.15);
+    }
+  }
+
+  // the motor of the lift and the ropes running over the sheave, while a cab moves nearby (level 0..1)
+  liftHum(level) {
+    if (!this.ctx) return;
+    const c = this.ctx;
+    if (!this.hum) {
+      const g = c.createGain();
+      g.gain.value = 0;
+      const a = c.createOscillator();
+      a.type = 'sine';
+      a.frequency.value = 50;
+      const b = c.createOscillator();
+      b.type = 'sawtooth';
+      b.frequency.value = 100;
+      const lp = c.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 260;
+      const ga = c.createGain();
+      ga.gain.value = 0.6;
+      const gb = c.createGain();
+      gb.gain.value = 0.25;
+      a.connect(ga).connect(g);
+      b.connect(lp).connect(gb).connect(g);
+      const n = this.noiseSrc();
+      const bp = c.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 700;
+      bp.Q.value = 0.8;
+      const gn = c.createGain();
+      gn.gain.value = 0.35;
+      n.connect(bp).connect(gn).connect(g);
+      g.connect(this.sfxGain);
+      a.start(); b.start(); n.start();
+      this.hum = g;
+    }
+    this.hum.gain.setTargetAtTime(level * 0.11, c.currentTime, 0.15);
   }
 
   land(strength, surface = 'hard') {
